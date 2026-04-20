@@ -96,29 +96,42 @@ def list_candidate_dirs(root: Path) -> list[Path]:
 def scan(
     root: Path,
     *,
+    skip: Callable[[Path, list[Path], Path | None], bool] | None = None,
     on_folder: Callable[[Path, int, int], None] | None = None,
+    on_skip: Callable[[Path, int, int], None] | None = None,
     on_done: Callable[[Concert, int, int], None] | None = None,
 ) -> list[Concert]:
     """Parse every concert folder under *root* and return a list of Concerts.
 
-    Callbacks (both optional):
-      * ``on_folder(path, index, total)`` — fires *before* a folder is parsed.
+    Callbacks (all optional):
+      * ``skip(folder, audio_files, info_txt) -> bool`` — consulted after
+        audio is enumerated but before parsing. Returning True elides the
+        parse step; the folder is then surfaced via ``on_skip`` instead of
+        ``on_folder``/``on_done``.
+      * ``on_folder(path, index, total)`` — fires before a folder is parsed.
         Used to update a "now scanning" indicator.
-      * ``on_done(concert, index, total)`` — fires *after* each concert is
+      * ``on_skip(path, index, total)`` — fires when ``skip`` returns True.
+      * ``on_done(concert, index, total)`` — fires after each concert is
         built. Used to feed a "recently discovered" rolodex.
 
-    Both callbacks receive 1-based indices and the total candidate count.
+    All callbacks receive 1-based indices and the total candidate count.
     """
     candidates = list_candidate_dirs(root)
     total = len(candidates)
     results: list[Concert] = []
     for idx, entry in enumerate(candidates, start=1):
-        if on_folder is not None:
-            on_folder(entry, idx, total)
         audio, nested = _collect_audio(entry)
         if not audio:
+            if on_folder is not None:
+                on_folder(entry, idx, total)
             continue
         info = _pick_info_txt(nested or entry)
+        if skip is not None and skip(entry, audio, info):
+            if on_skip is not None:
+                on_skip(entry, idx, total)
+            continue
+        if on_folder is not None:
+            on_folder(entry, idx, total)
         concert = build_concert(entry, audio, info)
         results.append(concert)
         if on_done is not None:

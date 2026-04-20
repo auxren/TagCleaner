@@ -70,6 +70,7 @@ class ScanDisplay:
     _current_pulse: int = 0
     _idx: int = 0
     _total: int = 0
+    _skipped: int = 0
     _start: float = field(default_factory=time.monotonic)
     _recent: deque[_Finding] = field(default_factory=lambda: deque(maxlen=6))
 
@@ -86,6 +87,11 @@ class ScanDisplay:
         self._current_folder = path.name
         self._idx = idx
         self._total = total
+
+    def on_skip(self, path: Path, idx: int, total: int) -> None:
+        self._idx = idx
+        self._total = total
+        self._skipped += 1
 
     def on_done(self, concert) -> None:
         if not (concert.artist or concert.date):
@@ -168,6 +174,8 @@ class ScanDisplay:
         line.append_text(bar)
         line.append(f"  {pct} ", style="bold")
         line.append(timing, style="bright_cyan")
+        if self._skipped:
+            line.append(f"  ⏭ {self._skipped} cached", style="bright_black")
         return line
 
     def _staff_row(self, row: list[tuple[str, str]]) -> Text:

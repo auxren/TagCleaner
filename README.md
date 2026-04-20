@@ -111,6 +111,38 @@ tagcleaner /mnt/music/concerts --dry-run --drafts /tmp/drafts.json
 tagcleaner /mnt/music/concerts --load-drafts /tmp/drafts.json --yes
 ```
 
+## Run it again: the history file
+
+On every run TagCleaner writes `tagcleaner-history.json` next to the scanned
+root (override with `--history FILE`, or turn it off with `--no-history`).
+The file has two jobs:
+
+1. **Skip work you've already finished.** On the next run, any folder whose
+   last pass tagged successfully *and* whose audio contents haven't changed
+   (a SHA-1 of filenames + sizes) is skipped. Running TagCleaner over a
+   100k-folder library a second time only re-parses the folders that actually
+   changed.
+2. **Keep an audit / training log.** Each entry records what the parser
+   decided — artist, date, venue, setlist, confidence, issues — plus the
+   mode and outcome of the last tagging pass. That's the raw material for
+   improving the parser against a real library.
+
+Skip logic is conservative on purpose:
+
+- Dry-runs never cause a real run to be skipped.
+- If the last run had any failures, the folder is re-tried.
+- Changing `--copy-to` to a new destination re-processes everything.
+- `--rescan-all` forces a full re-parse for one run without touching history.
+
+```bash
+tagcleaner /mnt/music/concerts               # writes/reads tagcleaner-history.json
+tagcleaner /mnt/music/concerts --rescan-all  # re-parse everything (still updates history)
+tagcleaner /mnt/music/concerts --no-history  # one-off run, nothing persisted
+tagcleaner /mnt/music/concerts --history /tmp/tc.json
+```
+
+Delete the file any time to start fresh.
+
 ## Enrich with setlist.fm (optional)
 
 If a folder is missing venue/city/setlist information, TagCleaner can query
