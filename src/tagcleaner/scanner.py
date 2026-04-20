@@ -97,12 +97,17 @@ def scan(
     root: Path,
     *,
     on_folder: Callable[[Path, int, int], None] | None = None,
+    on_done: Callable[[Concert, int, int], None] | None = None,
 ) -> list[Concert]:
     """Parse every concert folder under *root* and return a list of Concerts.
 
-    If *on_folder* is supplied it is invoked as ``on_folder(path, index, total)``
-    before each folder is parsed. The CLI uses this to drive a live progress
-    bar, since parsing can take several minutes on slow/remote filesystems.
+    Callbacks (both optional):
+      * ``on_folder(path, index, total)`` — fires *before* a folder is parsed.
+        Used to update a "now scanning" indicator.
+      * ``on_done(concert, index, total)`` — fires *after* each concert is
+        built. Used to feed a "recently discovered" rolodex.
+
+    Both callbacks receive 1-based indices and the total candidate count.
     """
     candidates = list_candidate_dirs(root)
     total = len(candidates)
@@ -114,5 +119,8 @@ def scan(
         if not audio:
             continue
         info = _pick_info_txt(nested or entry)
-        results.append(build_concert(entry, audio, info))
+        concert = build_concert(entry, audio, info)
+        results.append(concert)
+        if on_done is not None:
+            on_done(concert, idx, total)
     return results

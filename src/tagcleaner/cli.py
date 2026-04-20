@@ -16,18 +16,11 @@ import sys
 from pathlib import Path
 
 from rich.console import Console
-from rich.progress import (
-    BarColumn,
-    MofNCompleteColumn,
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    TimeElapsedColumn,
-)
+from rich.live import Live
 from rich.table import Table
 
 from . import __version__
-from .banner import AnimatedNotesColumn, render_banner
+from .banner import ScanDisplay, render_banner
 from .drafts import save_drafts, load_drafts
 from .models import Concert
 from .scanner import scan
@@ -112,34 +105,19 @@ def _render_verbose(concerts: list[Concert]) -> None:
 
 
 def _scan_with_progress(root: Path) -> list[Concert]:
-    """Run scanner.scan() behind a Rich progress bar so the user sees that
-    the tool is making progress across potentially thousands of folders on a
-    slow share (SMB/NFS). Falls back to a silent scan if the terminal doesn't
-    support the live display."""
+    """Run scanner.scan() behind a live animated panel so the user can see
+    continuous motion even on slow/remote filesystems. The ScanDisplay is
+    ticked by Rich's refresh thread, so it keeps animating while the main
+    thread is blocked on filesystem I/O."""
     console.print(f"[cyan]🔍 Scanning[/] [bold]{root}[/] ...")
-    columns = (
-        SpinnerColumn(style="cyan"),
-        TextColumn("[bold cyan]scan[/]"),
-        AnimatedNotesColumn(width=18),
-        BarColumn(bar_width=None),
-        MofNCompleteColumn(),
-        TextColumn("[bright_black]{task.fields[folder]}[/]",
-                   table_column=None),
-        TimeElapsedColumn(),
-    )
-    with Progress(*columns, console=console, transient=True,
-                  refresh_per_second=10) as progress:
-        task = progress.add_task("scan", total=0, folder="")
-
-        def _on(path: Path, idx: int, total: int) -> None:
-            if progress.tasks[0].total != total:
-                progress.update(task, total=total)
-            name = path.name
-            if len(name) > 60:
-                name = name[:57] + "..."
-            progress.update(task, advance=1, folder=name)
-
-        return scan(root, on_folder=_on)
+    width = max(48, min((console.size.width or 80) - 8, 78))
+    display = ScanDisplay(staff_width=width)
+    with Live(display, console=console, refresh_per_second=12, transient=True):
+        return scan(
+            root,
+            on_folder=display.on_folder,
+            on_done=lambda c, i, t: display.on_done(c),
+        )
 
 
 def _enrich_all(concerts: list[Concert], api_key: str, overwrite: bool) -> None:
