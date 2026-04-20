@@ -15,22 +15,47 @@ from .models import Concert, SourceInfo, Track
 
 
 def concert_to_dict(c: Concert) -> dict[str, Any]:
+    # Linux filesystems can hand us filenames with non-UTF-8 bytes; Python
+    # surfaces those as lone UTF-16 surrogates via surrogateescape. JSON
+    # can serialize them, but write_text(encoding="utf-8") can't, so scrub
+    # them to U+FFFD before they reach the serializer.
     return {
-        "folder": str(c.folder),
-        "artist": c.artist,
-        "date": c.date,
-        "venue": c.venue,
-        "city": c.city,
-        "region": c.region,
-        "source": asdict(c.source),
-        "album": c.album_name(),
+        "folder": _clean(str(c.folder)),
+        "artist": _clean(c.artist),
+        "date": _clean(c.date),
+        "venue": _clean(c.venue),
+        "city": _clean(c.city),
+        "region": _clean(c.region),
+        "source": _clean_source(asdict(c.source)),
+        "album": _clean(c.album_name()),
         "confidence": c.confidence(),
-        "issues": list(c.issues),
-        "audio_files": [str(p) for p in c.audio_files],
+        "issues": [_clean(i) for i in c.issues],
+        "audio_files": [_clean(str(p)) for p in c.audio_files],
         "tracks": [
-            {"number": t.number, "title": t.title, "disc": t.disc, "disc_total": t.disc_total}
+            {
+                "number": t.number,
+                "title": _clean(t.title),
+                "disc": t.disc,
+                "disc_total": t.disc_total,
+            }
             for t in c.tracks
         ],
+    }
+
+
+def _clean(s):
+    if s is None:
+        return None
+    if isinstance(s, str):
+        return s.encode("utf-8", "replace").decode("utf-8")
+    return s
+
+
+def _clean_source(d: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": _clean(d.get("kind")),
+        "mics": [_clean(m) for m in (d.get("mics") or [])],
+        "taper": _clean(d.get("taper")),
     }
 
 
@@ -55,7 +80,8 @@ def concerts_to_json(concerts: list[Concert]) -> str:
 
 
 def save_drafts(concerts: list[Concert], path: Path) -> None:
-    path.write_text(concerts_to_json(concerts), encoding="utf-8")
+    data = concerts_to_json(concerts).encode("utf-8", "replace")
+    path.write_bytes(data)
 
 
 def load_drafts(path: Path) -> list[Concert]:

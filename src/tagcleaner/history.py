@@ -163,10 +163,8 @@ def save_history(history: History, path: Path) -> None:
         "entries": {k: _entry_to_dict(e) for k, e in history.entries.items()},
     }
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    data = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8", "replace")
+    tmp.write_bytes(data)
     tmp.replace(path)
 
 
