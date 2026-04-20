@@ -27,7 +27,7 @@ from rich.progress import (
 from rich.table import Table
 
 from . import __version__
-from .banner import render_banner
+from .banner import AnimatedNotesColumn, render_banner
 from .drafts import save_drafts, load_drafts
 from .models import Concert
 from .scanner import scan
@@ -120,13 +120,15 @@ def _scan_with_progress(root: Path) -> list[Concert]:
     columns = (
         SpinnerColumn(style="cyan"),
         TextColumn("[bold cyan]scan[/]"),
+        AnimatedNotesColumn(width=18),
         BarColumn(bar_width=None),
         MofNCompleteColumn(),
         TextColumn("[bright_black]{task.fields[folder]}[/]",
                    table_column=None),
         TimeElapsedColumn(),
     )
-    with Progress(*columns, console=console, transient=True) as progress:
+    with Progress(*columns, console=console, transient=True,
+                  refresh_per_second=10) as progress:
         task = progress.add_task("scan", total=0, folder="")
 
         def _on(path: Path, idx: int, total: int) -> None:
