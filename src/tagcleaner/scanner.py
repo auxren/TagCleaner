@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Callable
 
 from .parser import build_concert
 from .models import Concert
@@ -81,5 +82,37 @@ def _pick_info_txt(folder: Path) -> Path | None:
     return candidates[0]
 
 
-def scan(root: Path) -> list[Concert]:
-    return [build_concert(folder, audio, info) for folder, audio, info in iter_concert_folders(root)]
+def list_candidate_dirs(root: Path) -> list[Path]:
+    """Cheap directory listing used by the CLI to size a progress bar before
+    the expensive per-folder walk."""
+    if not root.is_dir():
+        return []
+    return sorted(
+        p for p in root.iterdir()
+        if p.is_dir() and not p.name.startswith(".")
+    )
+
+
+def scan(
+    root: Path,
+    *,
+    on_folder: Callable[[Path, int, int], None] | None = None,
+) -> list[Concert]:
+    """Parse every concert folder under *root* and return a list of Concerts.
+
+    If *on_folder* is supplied it is invoked as ``on_folder(path, index, total)``
+    before each folder is parsed. The CLI uses this to drive a live progress
+    bar, since parsing can take several minutes on slow/remote filesystems.
+    """
+    candidates = list_candidate_dirs(root)
+    total = len(candidates)
+    results: list[Concert] = []
+    for idx, entry in enumerate(candidates, start=1):
+        if on_folder is not None:
+            on_folder(entry, idx, total)
+        audio, nested = _collect_audio(entry)
+        if not audio:
+            continue
+        info = _pick_info_txt(nested or entry)
+        results.append(build_concert(entry, audio, info))
+    return results

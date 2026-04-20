@@ -16,6 +16,14 @@ import sys
 from pathlib import Path
 
 from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
 
 from . import __version__
@@ -101,6 +109,35 @@ def _render_verbose(concerts: list[Concert]) -> None:
         for a, t in zip(c.audio_files, c.tracks):
             disc = f"{t.disc}/{t.disc_total} " if t.disc else ""
             console.print(f"    {disc}{t.number:02d}  {a.name}  →  {t.title}")
+
+
+def _scan_with_progress(root: Path) -> list[Concert]:
+    """Run scanner.scan() behind a Rich progress bar so the user sees that
+    the tool is making progress across potentially thousands of folders on a
+    slow share (SMB/NFS). Falls back to a silent scan if the terminal doesn't
+    support the live display."""
+    console.print(f"[cyan]🔍 Scanning[/] [bold]{root}[/] ...")
+    columns = (
+        SpinnerColumn(style="cyan"),
+        TextColumn("[bold cyan]scan[/]"),
+        BarColumn(bar_width=None),
+        MofNCompleteColumn(),
+        TextColumn("[bright_black]{task.fields[folder]}[/]",
+                   table_column=None),
+        TimeElapsedColumn(),
+    )
+    with Progress(*columns, console=console, transient=True) as progress:
+        task = progress.add_task("scan", total=0, folder="")
+
+        def _on(path: Path, idx: int, total: int) -> None:
+            if progress.tasks[0].total != total:
+                progress.update(task, total=total)
+            name = path.name
+            if len(name) > 60:
+                name = name[:57] + "..."
+            progress.update(task, advance=1, folder=name)
+
+        return scan(root, on_folder=_on)
 
 
 def _enrich_all(concerts: list[Concert], api_key: str, overwrite: bool) -> None:
@@ -193,8 +230,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.path.is_dir():
             console.print(f"[bold red]❌ error:[/] not a directory: {args.path}")
             return 2
-        console.print(f"[cyan]🔍 Scanning[/] [bold]{args.path}[/] ...")
-        concerts = scan(args.path)
+        concerts = _scan_with_progress(args.path)
         console.print(f"[green]   found[/] [bold]{len(concerts)}[/] concert folder(s)\n")
 
     if not concerts:
