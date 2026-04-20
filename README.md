@@ -182,8 +182,11 @@ concerts/
     └── <audio files>
 ```
 
-Nested layouts like `folder/folder/*.flac` (common with extracted archives)
-are handled automatically.
+Artist-nested and year-nested libraries work too — TagCleaner walks the
+whole tree looking for concert folders, so layouts like
+`Tapes/Artist/show/` or `Tapes/Artist/1987/show/` are fully discovered.
+Single-folder unpack wrappers (`show/show/*.flac`, common with extracted
+archives) collapse back to the outer name automatically.
 
 ### Dates
 
@@ -233,6 +236,9 @@ parser recognises all of:
 Single-disc shows (even ones labelled `Disc One`) get no disc tags.
 
 ## Tag layout
+
+`info.txt` files are read in UTF-8, UTF-16 LE/BE (with or without BOM),
+and cp1252 — Windows Notepad exports tag correctly without mojibake.
 
 | Tag | Source |
 |---|---|
