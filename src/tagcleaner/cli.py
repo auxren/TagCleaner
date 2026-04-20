@@ -20,6 +20,8 @@ from rich.live import Live
 from rich.table import Table
 
 from . import __version__
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
+
 from .banner import ScanDisplay, render_banner
 from .drafts import save_drafts, load_drafts
 from .history import (
@@ -67,6 +69,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("-v", "--verbose", action="store_true", help="Show full per-track table.")
     p.add_argument("--no-banner", action="store_true",
                    help="Suppress the startup ASCII banner.")
+    p.add_argument("--plain", action="store_true",
+                   help="Use a simple one-line progress bar instead of the animated scan panel. "
+                        "Safer on terminals where the animated panel duplicates in scrollback.")
     p.add_argument("--enrich-setlistfm", action="store_true",
                    help="Query setlist.fm to fill missing venue/city/setlist and confirm parsed data.")
     p.add_argument("--setlistfm-key", metavar="KEY",
@@ -127,20 +132,21 @@ def _scan_with_progress(
     mode: Mode,
     copy_to: Path | None,
     rescan_all: bool,
+    plain: bool = False,
 ) -> tuple[list[tuple[Concert, str, float]], list[HistoryEntry]]:
-    """Run scanner.scan() behind a live animated panel so the user can see
-    continuous motion even on slow/remote filesystems. The ScanDisplay is
-    ticked by Rich's refresh thread, so it keeps animating while the main
-    thread is blocked on filesystem I/O.
+    """Run scanner.scan() behind a progress UI.
 
     Returns ``(fresh, skipped)``: ``(concert, fingerprint, folder_mtime)``
     triples for folders parsed this run, and the history entries for
     folders skipped because they were already tagged and either their
     mtime or audio-content fingerprint still matches the stored value.
+
+    When ``plain`` is True we use a simple one-line ``rich.progress.Progress``
+    bar. That path is battle-tested across terminals and avoids the width /
+    cursor-bookkeeping issues that can trip up the fancy animated panel on
+    some ssh/tmux setups.
     """
     console.print(f"[cyan]🔍 Scanning[/] [bold]{root}[/] ...")
-    width = max(48, min((console.size.width or 80) - 8, 78))
-    display = ScanDisplay(staff_width=width)
     skipped: list[HistoryEntry] = []
 
     def _pre_skip(folder: Path, mtime: float) -> bool:
@@ -161,16 +167,57 @@ def _scan_with_progress(
             return True
         return False
 
+    if plain:
+        fresh = _scan_plain(root, pre_skip=_pre_skip, skip=_skip)
+    else:
+        fresh = _scan_animated(root, pre_skip=_pre_skip, skip=_skip)
+    return fresh, skipped
+
+
+def _scan_animated(root, *, pre_skip, skip):
+    width = max(48, min((console.size.width or 80) - 8, 78))
+    display = ScanDisplay(staff_width=width)
     with Live(display, console=console, refresh_per_second=12, transient=True):
-        fresh = scan(
+        return scan(
             root,
-            pre_skip=_pre_skip,
-            skip=_skip,
+            pre_skip=pre_skip,
+            skip=skip,
             on_folder=display.on_folder,
             on_skip=display.on_skip,
             on_done=lambda c, i, t: display.on_done(c),
         )
-    return fresh, skipped
+
+
+def _scan_plain(root, *, pre_skip, skip):
+    """Plain one-line Progress bar. Safer on terminals where the animated
+    panel duplicates in scrollback."""
+    progress = Progress(
+        TextColumn("[cyan]🔍 scanning[/]"),
+        BarColumn(bar_width=None),
+        MofNCompleteColumn(),
+        TextColumn("[bright_black]⏭ {task.fields[skipped]} cached[/]"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    )
+    with progress:
+        task = progress.add_task("scanning", total=None, skipped=0)
+        state = {"skipped": 0}
+
+        def _on_folder(path, idx, total):
+            progress.update(task, completed=idx, total=total)
+
+        def _on_skip(path, idx, total):
+            state["skipped"] += 1
+            progress.update(task, completed=idx, total=total, skipped=state["skipped"])
+
+        return scan(
+            root,
+            pre_skip=pre_skip,
+            skip=skip,
+            on_folder=_on_folder,
+            on_skip=_on_skip,
+        )
 
 
 def _enrich_all(concerts: list[Concert], api_key: str, overwrite: bool) -> None:
@@ -307,6 +354,7 @@ def main(argv: list[str] | None = None) -> int:
             mode=mode,
             copy_to=args.copy_to,
             rescan_all=args.rescan_all,
+            plain=args.plain,
         )
         concerts = [c for c, _fp, _mt in fresh]
         for concert, fp, mtime in fresh:

@@ -28,7 +28,11 @@ def render_banner(console: Console) -> None:
     console.print(TAGLINE + "\n")
 
 
-_NOTES = ("♪", "♫", "♬", "♩", "♭", "♮", "♯", "𝅘𝅥𝅮")
+_NOTES = ("♪", "♫", "♬", "♩", "♭", "♮", "♯")
+# NB: avoid Supplementary-Plane glyphs like 𝅘𝅥𝅮 (U+1D160) here. Rich measures
+# them as 1 cell; many terminals render them as 2 (or 0), and per-frame width
+# drift eventually corrupts Live's cursor-up bookkeeping and the panel starts
+# duplicating in scrollback instead of redrawing in place.
 _DENSITY = 0.42  # probability that a newly-introduced cell is a note vs. empty
 _PALETTE = (
     "bright_magenta", "magenta", "medium_orchid", "deep_pink3",

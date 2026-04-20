@@ -137,6 +137,20 @@ class TestCopyTo:
         assert f["ARTIST"] == ["Rush"]
 
 
+class TestPlainUI:
+    def test_plain_scan_runs(self, library: Path):
+        code = main([str(library), "--dry-run", "--no-banner", "--yes", "--plain"])
+        assert code == 0
+        assert (library / "tagcleaner-drafts.json").exists()
+
+    def test_plain_in_place_writes_tags(self, library: Path):
+        from mutagen.flac import FLAC
+        code = main([str(library), "--yes", "--no-banner", "--plain"])
+        assert code == 0
+        th = library / "Talking Heads 1980-08-27 Wollman Rink" / "01 Psycho Killer.flac"
+        assert FLAC(str(th))["ARTIST"] == ["Talking Heads"]
+
+
 class TestErrorHandling:
     def test_nonexistent_path(self, tmp_path: Path):
         code = main([str(tmp_path / "does-not-exist"), "--dry-run", "--no-banner", "--yes"])

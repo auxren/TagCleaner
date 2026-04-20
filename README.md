@@ -143,6 +143,10 @@ tagcleaner /mnt/music/concerts --history /tmp/tc.json
 
 Delete the file any time to start fresh.
 
+If the animated scan panel misrenders in your terminal (e.g. panels duplicating
+in scrollback over ssh / tmux / some emulators), pass `--plain` to fall back to
+a simple one-line progress bar.
+
 ## Enrich with setlist.fm (optional)
 
 If a folder is missing venue/city/setlist information, TagCleaner can query
