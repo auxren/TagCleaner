@@ -37,32 +37,78 @@ def iter_concert_folders(root: Path) -> Iterator[tuple[Path, list[Path], Path | 
         yield folder, audio, info
 
 
-def list_candidate_dirs(root: Path) -> list[tuple[Path, float]]:
+def list_candidate_dirs(root: Path, *, max_depth: int = 8) -> list[tuple[Path, float]]:
     """Return ``(candidate_folder, folder_mtime)`` pairs beneath *root*.
 
-    Uses ``os.scandir`` so the mtime comes from the cached ``DirEntry.stat``
-    (one syscall per candidate, not two). The CLI uses the mtime to decide
-    whether to skip enumeration entirely via history.
+    Walks recursively so that artist-nested libraries (``Tapes/Artist/show/``)
+    or year-nested ones (``Tapes/Artist/1987/show/``) are discovered, not just
+    the first level under *root*. A folder is a concert if it either:
+
+      * contains audio files directly, or
+      * contains exactly one subdirectory with audio and no other subdirs
+        (the classic ``folder/folder/*.flac`` unpack pattern).
+
+    Otherwise we descend into each subdirectory to keep looking.
+
+    ``max_depth`` guards against pathological trees / symlink loops.
     """
     if not root.is_dir():
         return []
     out: list[tuple[Path, float]] = []
-    try:
-        with os.scandir(root) as it:
-            for entry in it:
-                if entry.name.startswith("."):
-                    continue
-                try:
-                    if not entry.is_dir(follow_symlinks=False):
-                        continue
-                    st = entry.stat(follow_symlinks=False)
-                except OSError:
-                    continue
-                out.append((Path(entry.path), st.st_mtime))
-    except OSError:
-        return []
-    out.sort(key=lambda pair: pair[0].name)
+    _collect_candidates(root, out, depth=0, max_depth=max_depth)
+    out.sort(key=lambda pair: str(pair[0]))
     return out
+
+
+def _collect_candidates(
+    folder: Path,
+    out: list[tuple[Path, float]],
+    *,
+    depth: int,
+    max_depth: int,
+) -> None:
+    if depth > max_depth:
+        return
+    classified = _classify(folder)
+    if classified is None:
+        return
+    audio, _info, subdirs = classified
+    try:
+        mtime = folder.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    if audio:
+        out.append((folder, mtime))
+        return
+    if not subdirs:
+        return
+    if len(subdirs) == 1 and _looks_like_unpack_wrapper(folder.name, subdirs[0].name):
+        inner = _classify(subdirs[0])
+        if inner is not None and inner[0]:
+            out.append((folder, mtime))
+            return
+    for sub in subdirs:
+        _collect_candidates(sub, out, depth=depth + 1, max_depth=max_depth)
+
+
+def _looks_like_unpack_wrapper(outer: str, inner: str) -> bool:
+    """Decide whether ``outer/inner`` is an archive-unpack wrapper (where the
+    inner folder is just a re-run of the outer name, typical of unzipped
+    etree torrents) vs. a real container folder (artist, year, etc.) that
+    happens to have one child concert.
+
+    We only collapse when the names are effectively the same — otherwise a
+    library organised as ``Artist/Year/Show`` would get mis-rooted at the
+    year, hiding every other year's shows.
+    """
+    o = outer.strip().lower()
+    i = inner.strip().lower()
+    if not o or not i:
+        return False
+    if o == i:
+        return True
+    shorter, longer = (o, i) if len(o) <= len(i) else (i, o)
+    return len(shorter) >= 6 and longer.startswith(shorter)
 
 
 def scan(

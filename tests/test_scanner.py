@@ -109,9 +109,13 @@ class TestEnumerateFolder:
 
 
 class TestListCandidateDirs:
-    def test_returns_mtime_pairs(self, tmp_path: Path):
-        (tmp_path / "a").mkdir()
-        (tmp_path / "b").mkdir()
+    def test_returns_mtime_pairs(self, tmp_path: Path, make_flac):
+        a = tmp_path / "a"
+        a.mkdir()
+        make_flac(a / "01.flac")
+        b = tmp_path / "b"
+        b.mkdir()
+        make_flac(b / "01.flac")
         (tmp_path / "file.txt").write_text("x", encoding="utf-8")
         (tmp_path / ".hidden").mkdir()
         out = list_candidate_dirs(tmp_path)
@@ -123,6 +127,51 @@ class TestListCandidateDirs:
 
     def test_missing_root_returns_empty(self, tmp_path: Path):
         assert list_candidate_dirs(tmp_path / "does-not-exist") == []
+
+    def test_artist_nested_library(self, tmp_path: Path, make_flac):
+        # Tapes/Artist/concert/*.flac — the common organized-by-artist layout
+        # that earlier versions of the scanner collapsed to one concert per
+        # artist.
+        for artist in ("Grateful Dead", "Phish"):
+            for show in ("1987-08-22", "1993-02-10", "1997-12-31"):
+                d = tmp_path / artist / f"{artist}-{show}"
+                d.mkdir(parents=True)
+                make_flac(d / "01.flac")
+        out = list_candidate_dirs(tmp_path)
+        names = sorted(p.name for p, _ in out)
+        assert len(names) == 6
+        assert "Grateful Dead-1987-08-22" in names
+        assert "Phish-1997-12-31" in names
+
+    def test_deep_nesting(self, tmp_path: Path, make_flac):
+        # Tapes/Artist/Year/concert/*.flac
+        d = tmp_path / "Grateful Dead" / "1987" / "gd1987-08-22"
+        d.mkdir(parents=True)
+        make_flac(d / "01.flac")
+        d2 = tmp_path / "Grateful Dead" / "1988" / "gd1988-06-15"
+        d2.mkdir(parents=True)
+        make_flac(d2 / "01.flac")
+        out = list_candidate_dirs(tmp_path)
+        names = {p.name for p, _ in out}
+        assert names == {"gd1987-08-22", "gd1988-06-15"}
+
+    def test_nested_unpack_still_outer(self, tmp_path: Path, make_flac):
+        # Classic archive-unpack: outer/outer/*.flac — outer is the concert.
+        outer = tmp_path / "gd1987-08-22.sbd"
+        inner = outer / "gd1987-08-22.sbd"
+        inner.mkdir(parents=True)
+        make_flac(inner / "01.flac")
+        out = list_candidate_dirs(tmp_path)
+        assert [p.name for p, _ in out] == ["gd1987-08-22.sbd"]
+
+    def test_flat_layout_still_works(self, tmp_path: Path, make_flac):
+        # Pending Cleanup style: Tapes/concert/*.flac
+        for show in ("show1", "show2", "show3"):
+            d = tmp_path / show
+            d.mkdir()
+            make_flac(d / "01.flac")
+        out = list_candidate_dirs(tmp_path)
+        assert [p.name for p, _ in out] == ["show1", "show2", "show3"]
 
 
 class TestScan:
