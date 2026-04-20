@@ -36,11 +36,31 @@ python3 -m venv .venv
 .venv/bin/pip install -e .
 ```
 
-Or, once published:
+The `tagcleaner` command is now at `.venv/bin/tagcleaner`. You have three
+choices for running it:
 
 ```bash
-pipx install tagcleaner
+# 1. Run it directly from the venv
+./.venv/bin/tagcleaner --dry-run /path/to/concerts
+
+# 2. Activate the venv, then just use the name
+source .venv/bin/activate
+tagcleaner --dry-run /path/to/concerts
+
+# 3. Symlink it onto your PATH (one-time setup)
+sudo ln -s "$PWD/.venv/bin/tagcleaner" /usr/local/bin/tagcleaner
+tagcleaner --dry-run /path/to/concerts
 ```
+
+If you'd rather install globally and skip the venv dance:
+
+```bash
+pip install --user -e .        # installs to ~/.local/bin
+# or on newer distros that block it:
+pip install --break-system-packages -e .
+```
+
+Once published to PyPI, `pipx install tagcleaner` will Just Work.
 
 ## Quickstart
 
