@@ -27,7 +27,7 @@ from .history import (
     History,
     HistoryEntry,
     TaggingOutcome,
-    fingerprint as history_fingerprint,
+    can_skip_by_mtime as history_can_skip_by_mtime,
     load_history,
     save_history,
     should_skip as history_should_skip,
@@ -127,25 +127,34 @@ def _scan_with_progress(
     mode: Mode,
     copy_to: Path | None,
     rescan_all: bool,
-) -> tuple[list[Concert], list[HistoryEntry]]:
+) -> tuple[list[tuple[Concert, str, float]], list[HistoryEntry]]:
     """Run scanner.scan() behind a live animated panel so the user can see
     continuous motion even on slow/remote filesystems. The ScanDisplay is
     ticked by Rich's refresh thread, so it keeps animating while the main
     thread is blocked on filesystem I/O.
 
-    Returns ``(fresh, skipped)``: fresh concerts parsed this run, and the
-    history entries for folders skipped because they were already tagged
-    and their audio contents haven't changed.
+    Returns ``(fresh, skipped)``: ``(concert, fingerprint, folder_mtime)``
+    triples for folders parsed this run, and the history entries for
+    folders skipped because they were already tagged and either their
+    mtime or audio-content fingerprint still matches the stored value.
     """
     console.print(f"[cyan]🔍 Scanning[/] [bold]{root}[/] ...")
     width = max(48, min((console.size.width or 80) - 8, 78))
     display = ScanDisplay(staff_width=width)
     skipped: list[HistoryEntry] = []
 
-    def _skip(folder: Path, audio: list[Path], info: Path | None) -> bool:
+    def _pre_skip(folder: Path, mtime: float) -> bool:
         if rescan_all:
             return False
-        fp = history_fingerprint(folder, audio, info)
+        entry = history.get(folder)
+        if history_can_skip_by_mtime(entry, mtime, mode, copy_to):
+            skipped.append(entry)  # type: ignore[arg-type]  # guarded by can_skip_by_mtime
+            return True
+        return False
+
+    def _skip(folder: Path, fp: str) -> bool:
+        if rescan_all:
+            return False
         entry = history.get(folder)
         if history_should_skip(entry, fp, mode, copy_to):
             skipped.append(entry)  # type: ignore[arg-type]  # guarded by should_skip
@@ -155,6 +164,7 @@ def _scan_with_progress(
     with Live(display, console=console, refresh_per_second=12, transient=True):
         fresh = scan(
             root,
+            pre_skip=_pre_skip,
             skip=_skip,
             on_folder=display.on_folder,
             on_skip=display.on_skip,
@@ -291,18 +301,16 @@ def main(argv: list[str] | None = None) -> int:
         if not args.path.is_dir():
             console.print(f"[bold red]❌ error:[/] not a directory: {args.path}")
             return 2
-        concerts, skipped_entries = _scan_with_progress(
+        fresh, skipped_entries = _scan_with_progress(
             args.path,
             history=history,
             mode=mode,
             copy_to=args.copy_to,
             rescan_all=args.rescan_all,
         )
-        for c in concerts:
-            history.record_scan(
-                c,
-                history_fingerprint(c.folder, c.audio_files, c.info_txt),
-            )
+        concerts = [c for c, _fp, _mt in fresh]
+        for concert, fp, mtime in fresh:
+            history.record_scan(concert, fp, mtime)
         if skipped_entries:
             console.print(
                 f"[green]   found[/] [bold]{len(concerts)}[/] fresh, "

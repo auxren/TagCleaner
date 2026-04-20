@@ -2,13 +2,15 @@
 
 A history file (``tagcleaner-history.json`` by default, at the scan
 root) records every folder TagCleaner has parsed, together with a
-content fingerprint and the outcome of the last tag-writing pass. It
-serves two purposes:
+content fingerprint, the folder's mtime, and the outcome of the last
+tag-writing pass. It serves two purposes:
 
 1. **Skip already-done work.** On subsequent runs the scanner skips any
    folder whose prior run was tagged successfully in the same mode and
-   whose audio contents haven't changed. This lets you point the tool
-   at a large library repeatedly without re-parsing everything.
+   whose audio contents haven't changed. Folders whose filesystem mtime
+   matches the stored value are skipped *before* any enumeration, so a
+   second scan of an unchanged library finishes in seconds instead of
+   opening every directory.
 
 2. **Training / audit data.** Every record captures what the parser
    decided so the file can be inspected, diffed, or fed back into
@@ -25,7 +27,6 @@ The skip decision is deliberately conservative:
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import time
 from dataclasses import asdict, dataclass, field
@@ -47,7 +48,7 @@ class TaggingOutcome:
     applied: int = 0
     failed: int = 0
     skipped: int = 0
-    copy_to: Optional[str] = None   # absolute path when mode == "copy_to"
+    copy_to: Optional[str] = None   # absolute path when mode == "copy-to"
 
 
 @dataclass
@@ -57,6 +58,7 @@ class HistoryEntry:
     fingerprint: str
     concert: dict[str, Any]         # drafts-shaped dict (see drafts.concert_to_dict)
     tagging: Optional[TaggingOutcome] = None
+    folder_mtime: Optional[float] = None  # st_mtime at last scan; enables pre-enumeration skip
 
 
 @dataclass
@@ -67,7 +69,12 @@ class History:
     def get(self, folder: Path) -> Optional[HistoryEntry]:
         return self.entries.get(_key(folder))
 
-    def record_scan(self, concert: Concert, fingerprint: str) -> None:
+    def record_scan(
+        self,
+        concert: Concert,
+        fingerprint: str,
+        folder_mtime: Optional[float] = None,
+    ) -> None:
         key = _key(concert.folder)
         prior = self.entries.get(key)
         self.entries[key] = HistoryEntry(
@@ -76,6 +83,7 @@ class History:
             fingerprint=fingerprint,
             concert=concert_to_dict(concert),
             tagging=prior.tagging if prior else None,
+            folder_mtime=folder_mtime,
         )
 
     def record_tagging(self, folder: Path, outcome: TaggingOutcome) -> None:
@@ -83,28 +91,6 @@ class History:
         entry = self.entries.get(key)
         if entry is not None:
             entry.tagging = outcome
-
-
-def fingerprint(folder: Path, audio_files: list[Path], info_txt: Optional[Path]) -> str:
-    """Cheap content hash: folder name + sorted (audio name, size) + info.txt size.
-
-    Rename the folder, add/remove/resize any audio file, or swap the
-    info.txt and the fingerprint changes. We deliberately skip hashing
-    file bodies — opening every file would defeat the point of skipping.
-    """
-    h = hashlib.sha1()
-    h.update(folder.name.encode("utf-8", "replace"))
-    for f in sorted(audio_files, key=lambda p: p.name):
-        h.update(b"\x00a:")
-        h.update(f.name.encode("utf-8", "replace"))
-        h.update(b"|")
-        h.update(str(_safe_size(f)).encode("ascii"))
-    if info_txt is not None:
-        h.update(b"\x00i:")
-        h.update(info_txt.name.encode("utf-8", "replace"))
-        h.update(b"|")
-        h.update(str(_safe_size(info_txt)).encode("ascii"))
-    return h.hexdigest()
 
 
 def should_skip(
@@ -117,12 +103,36 @@ def should_skip(
         return False
     if entry.fingerprint != current_fingerprint:
         return False
-    outcome = entry.tagging
+    return _mode_matches(entry.tagging, mode, copy_to)
+
+
+def can_skip_by_mtime(
+    entry: Optional[HistoryEntry],
+    current_mtime: float,
+    mode: Mode,
+    copy_to: Optional[Path],
+) -> bool:
+    """True when the folder's mtime matches the recorded value AND the
+    prior tagging outcome already covers this mode/destination.
+
+    When this returns True the scanner can skip enumeration entirely —
+    no scandir, no fingerprint, no parse. This is the fast path that
+    turns a second scan of an unchanged library into near-instant work.
+    """
+    if entry is None or entry.tagging is None or entry.folder_mtime is None:
+        return False
+    if entry.folder_mtime != current_mtime:
+        return False
+    return _mode_matches(entry.tagging, mode, copy_to)
+
+
+def _mode_matches(
+    outcome: TaggingOutcome, mode: Mode, copy_to: Optional[Path]
+) -> bool:
     if outcome.failed > 0:
         return False
     prior_mode = outcome.mode
     if mode is Mode.DRY_RUN:
-        # Any successful prior real run means there's nothing to preview.
         return prior_mode in (Mode.IN_PLACE.value, Mode.COPY_TO.value)
     if mode is Mode.IN_PLACE:
         return prior_mode == Mode.IN_PLACE.value
@@ -151,6 +161,7 @@ def load_history(path: Path) -> History:
                 fingerprint=rec["fingerprint"],
                 concert=rec["concert"],
                 tagging=tagging,
+                folder_mtime=rec.get("folder_mtime"),
             )
         except (KeyError, TypeError):
             continue
@@ -182,18 +193,13 @@ def _entry_to_dict(entry: HistoryEntry) -> dict[str, Any]:
     }
     if entry.tagging is not None:
         d["tagging"] = asdict(entry.tagging)
+    if entry.folder_mtime is not None:
+        d["folder_mtime"] = entry.folder_mtime
     return d
 
 
 def _key(folder: Path) -> str:
     return str(folder.resolve())
-
-
-def _safe_size(p: Path) -> int:
-    try:
-        return p.stat().st_size
-    except OSError:
-        return -1
 
 
 def _now_iso() -> str:
