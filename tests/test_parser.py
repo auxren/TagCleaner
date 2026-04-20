@@ -8,11 +8,13 @@ import pytest
 from tagcleaner.parser import (
     _city_from_folder,
     _finalize_tracks,
+    _split_venue_city_region,
     build_concert,
     guess_artist_from_folder,
     parse_date,
     parse_info_txt,
     parse_setlist,
+    read_info_txt,
 )
 
 
@@ -139,6 +141,109 @@ class TestParseInfoTxt:
         body = "No errors occured.\nTalking Heads\n1980-08-27\n"
         out = parse_info_txt(body)
         assert out["artist"] == "Talking Heads"
+
+    def test_venue_first_line_not_classified_as_artist(self):
+        body = (
+            "Henry J. Kaiser Convention Center, Oakland, CA\n"
+            "1984-04-14\n"
+            "Grateful Dead\n"
+            "01. Alabama Getaway\n"
+        )
+        out = parse_info_txt(body)
+        assert out["artist"] == "Grateful Dead"
+        assert out["venue"] == "Henry J. Kaiser Convention Center"
+        assert out["city"] == "Oakland"
+        assert out["region"] == "CA"
+
+    def test_composite_venue_city_region_split(self):
+        body = (
+            "Phish\n"
+            "1997-12-31\n"
+            "Madison Square Garden, New York, NY\n"
+            "01. NICU\n"
+        )
+        out = parse_info_txt(body)
+        assert out["venue"] == "Madison Square Garden"
+        assert out["city"] == "New York"
+        assert out["region"] == "NY"
+
+    def test_composite_without_known_region_not_split(self):
+        # Three commas but last part isn't a state/country — don't invent.
+        body = "Some Band\n1999-01-01\nRandom, Thing, Other\n01. a\n"
+        out = parse_info_txt(body)
+        assert out.get("venue") != "Random"
+
+    def test_city_line_alone_not_classified_as_artist(self):
+        body = "Oakland, CA\n1984-04-14\nGrateful Dead\n01. Alabama Getaway\n"
+        out = parse_info_txt(body)
+        assert out["artist"] == "Grateful Dead"
+        assert out.get("city") == "Oakland"
+
+
+class TestReadInfoTxt:
+    def test_utf8_plain(self, tmp_path: Path):
+        p = tmp_path / "info.txt"
+        p.write_bytes("Grateful Dead\n".encode("utf-8"))
+        assert read_info_txt(p).startswith("Grateful Dead")
+
+    def test_utf8_bom(self, tmp_path: Path):
+        p = tmp_path / "info.txt"
+        p.write_bytes(b"\xef\xbb\xbf" + "Grateful Dead\n".encode("utf-8"))
+        text = read_info_txt(p)
+        assert text.startswith("Grateful Dead")
+        assert not text.startswith("\ufeff")
+
+    def test_utf16_le_bom(self, tmp_path: Path):
+        p = tmp_path / "info.txt"
+        p.write_bytes("Grateful Dead\n1987-08-22\n".encode("utf-16-le"))
+        # Prepend BOM
+        p.write_bytes(b"\xff\xfe" + "Grateful Dead\n1987-08-22\n".encode("utf-16-le"))
+        assert "Grateful Dead" in read_info_txt(p)
+
+    def test_utf16_be_bom(self, tmp_path: Path):
+        p = tmp_path / "info.txt"
+        p.write_bytes(b"\xfe\xff" + "Grateful Dead\n1987-08-22\n".encode("utf-16-be"))
+        assert "Grateful Dead" in read_info_txt(p)
+
+    def test_utf16_le_no_bom_detected(self, tmp_path: Path):
+        # Older Notepad saves UTF-16-LE without a BOM; the zero-byte density
+        # heuristic should catch it.
+        p = tmp_path / "info.txt"
+        body = ("Grateful Dead\n" * 20).encode("utf-16-le")
+        p.write_bytes(body)
+        assert "Grateful Dead" in read_info_txt(p)
+
+    def test_empty_file(self, tmp_path: Path):
+        p = tmp_path / "info.txt"
+        p.write_bytes(b"")
+        assert read_info_txt(p) == ""
+
+    def test_missing_file(self, tmp_path: Path):
+        assert read_info_txt(tmp_path / "nope.txt") == ""
+
+
+class TestSplitVenueCityRegion:
+    def test_state_code(self):
+        assert _split_venue_city_region("Wollman Rink, New York, NY") == (
+            "Wollman Rink", "New York", "NY",
+        )
+
+    def test_country(self):
+        assert _split_venue_city_region("Wembley Stadium, London, England") == (
+            "Wembley Stadium", "London", "England",
+        )
+
+    def test_unknown_tail_rejected(self):
+        assert _split_venue_city_region("A, B, C") == (None, None, None)
+
+    def test_two_parts_rejected(self):
+        assert _split_venue_city_region("City, NY") == (None, None, None)
+
+    def test_extra_commas_in_venue(self):
+        v, c, r = _split_venue_city_region("The Venue, Second Stage, Austin, TX")
+        assert v == "The Venue, Second Stage"
+        assert c == "Austin"
+        assert r == "TX"
 
 
 class TestCityFromFolder:

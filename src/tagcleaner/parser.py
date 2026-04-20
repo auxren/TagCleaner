@@ -266,12 +266,40 @@ def parse_setlist(body: str) -> list[tuple[int | None, str]]:
 
 
 def read_info_txt(path: Path) -> str:
-    for enc in ("utf-8", "latin-1", "cp1252"):
+    """Read *path* with best-effort encoding detection.
+
+    Real-world info.txt files show up in UTF-8, UTF-16 (Notepad's default on
+    older Windows), and occasionally cp1252. BOM sniffing handles the explicit
+    cases; a zero-byte-density heuristic catches UTF-16-LE files saved without
+    a BOM, which would otherwise come out as mojibake.
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return ""
+    if not raw:
+        return ""
+    if raw.startswith(b"\xff\xfe"):
+        return raw.decode("utf-16-le", errors="replace")
+    if raw.startswith(b"\xfe\xff"):
+        return raw.decode("utf-16-be", errors="replace")
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return raw.decode("utf-8-sig", errors="replace")
+    sample = raw[:1024]
+    if len(sample) >= 4:
+        odd_zeros = sample[1::2].count(0)
+        even_zeros = sample[0::2].count(0)
+        half = len(sample) // 2
+        if half and odd_zeros / half > 0.3 and odd_zeros > even_zeros:
+            return raw.decode("utf-16-le", errors="replace")
+        if half and even_zeros / half > 0.3 and even_zeros > odd_zeros:
+            return raw.decode("utf-16-be", errors="replace")
+    for enc in ("utf-8", "cp1252", "latin-1"):
         try:
-            return path.read_text(encoding=enc, errors="replace")
-        except OSError:
-            return ""
-    return ""
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
 
 
 def parse_info_txt(body: str) -> dict:
@@ -301,20 +329,32 @@ def parse_info_txt(body: str) -> dict:
 
     data["date"] = parse_date(body)
 
-    # Venue + city: look at the first ~8 lines, skipping artist.
-    for ln in nonblank[1:10]:
+    # Venue + city: look at the first ~10 lines, skipping the line we used as
+    # artist. We scan from position 0 (not 1) because the artist may have been
+    # rejected — in which case the venue is the first line.
+    for ln in nonblank[:10]:
+        if artist and ln == artist:
+            continue
         if parse_date(ln):  # date line
             continue
         if DISC_MARKER.search(ln):
             break
-        if "venue" not in data and _looks_like_venue(ln):
-            data["venue"] = ln.strip(",")
-            continue
+        if "venue" not in data or "city" not in data:
+            v, c, r = _split_venue_city_region(ln)
+            if v and c:
+                data.setdefault("venue", v)
+                data.setdefault("city", c)
+                if r:
+                    data.setdefault("region", r)
+                continue
         if "city" not in data and _looks_like_city(ln):
             city, region = _split_city_region(ln)
             data["city"] = city
             if region:
                 data["region"] = region
+            continue
+        if "venue" not in data and _looks_like_venue(ln):
+            data["venue"] = ln.strip(",")
             continue
     return data
 
@@ -329,10 +369,23 @@ _NOISE_FIRST_LINE = re.compile(
     re.I,
 )
 
+# Words that strongly suggest the line is a venue, not an artist. Used to stop
+# venue-only first lines (e.g. "Henry J. Kaiser Convention Center, Oakland, CA")
+# from getting classified as the artist.
+_VENUE_KEYWORDS = re.compile(
+    r"\b(?:arena|stadium|amphitheat(?:re|er)|coliseum|colosseum|"
+    r"cent(?:er|re)|theat(?:re|er)|auditorium|hall|club|pavilion|"
+    r"fairgrounds?|civic|gardens?|grounds?|bowl|palace|"
+    r"rink|ballroom|casino|university|college|dome|forum|lounge|"
+    r"speedway|festival|tabernacle)\b",
+    re.I,
+)
+
 
 def _first_artist_line(nonblank: list[str]) -> str | None:
     """Return the first line that plausibly names the artist.
-    Skips obvious boilerplate (URLs, checksum logs, 'No errors occured.', etc.).
+    Skips obvious boilerplate (URLs, checksum logs, 'No errors occured.', etc.)
+    and lines that look like a venue or 'City, ST'.
     """
     for line in nonblank[:6]:
         if _NOISE_FIRST_LINE.match(line):
@@ -346,6 +399,13 @@ def _first_artist_line(nonblank: list[str]) -> str | None:
             continue
         letters = sum(ch.isalpha() for ch in stripped)
         if letters < 2 or len(stripped) > 100:
+            continue
+        if _VENUE_KEYWORDS.search(stripped):
+            continue
+        if _looks_like_city(stripped):
+            continue
+        # "Venue, City, ST" three-comma shape — also a venue line.
+        if _split_venue_city_region(stripped)[0]:
             continue
         return stripped
     return None
@@ -436,6 +496,34 @@ def build_concert(
 
 
 US_STATE_CODE = re.compile(r"\b(AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY)\b")
+
+_COUNTRY_NAMES = frozenset({
+    "England", "Scotland", "Wales", "Ireland", "Canada", "Germany", "France",
+    "Netherlands", "Italy", "Spain", "Japan", "Australia", "UK", "USA",
+    "Mexico", "Belgium", "Sweden", "Norway", "Denmark", "Switzerland",
+    "Austria", "Finland", "Poland", "Greece", "Portugal", "Brazil",
+    "Argentina", "Russia", "China", "India",
+})
+
+
+def _split_venue_city_region(line: str) -> tuple[str | None, str | None, str | None]:
+    """If *line* is 'Venue, City, ST' or 'Venue, City, Country', return
+    (venue, city, region). Otherwise (None, None, None).
+
+    The region is gated on a known state code or country so that generic
+    three-comma lines ('Track 01, Part 1, extended') don't match.
+    """
+    parts = [p.strip() for p in line.split(",")]
+    if len(parts) < 3:
+        return None, None, None
+    region = parts[-1]
+    city = parts[-2]
+    venue = ", ".join(parts[:-2]).strip()
+    if not (venue and city and region):
+        return None, None, None
+    if US_STATE_CODE.fullmatch(region) or region in _COUNTRY_NAMES:
+        return venue, city, region
+    return None, None, None
 
 
 def _city_from_folder(name: str) -> tuple[str | None, str | None]:
