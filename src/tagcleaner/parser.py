@@ -113,6 +113,30 @@ ARTIST_PREFIX_MAP: dict[str, str] = {
     "rp": "Robert Plant", "tp": "Tom Petty",
     "zzt": "ZZ Top", "vm": "Van Morrison", "pf": "Pink Floyd",
     "lz": "Led Zeppelin", "rem": "R.E.M.",
+    # Mined from a 1000-item random sample of archive.org/etree (April 2026).
+    # Only prefixes with high purity in the corpus (all-or-nearly-all pointing
+    # to a single creator) are added here; ambiguous ones (dtb, los, bs) are
+    # deliberately left as whatever the original wiki list said.
+    "ttb": "Tedeschi Trucks Band", "furthur": "Furthur", "yarn": "Yarn",
+    "jrad": "Joe Russo's Almost Dead", "twiddle": "Twiddle",
+    "gsbg": "Greensky Bluegrass", "rd": "RatDog", "loslobos": "Los Lobos",
+    "jjj": "Jerry Joseph and the Jackmormons", "jauntee": "The Jauntee",
+    "nma": "North Mississippi Allstars", "bloodkin": "Bloodkin",
+    "tsp": "The Smashing Pumpkins", "hbr": "Hot Buttered Rum",
+    "plf": "Phil Lesh & Friends", "paf": "Phil Lesh & Friends",
+    "dubapoc": "Dub Apocalypse", "billystrings": "Billy Strings",
+    "eggy": "Eggy", "pgroove": "Perpetual Groove", "rh": "Robert Hunter",
+    "deadco": "Dead & Company", "hyryder": "Hyryder", "spafford": "Spafford",
+    "zendog": "ZenDog", "mudhoney": "Mudhoney",
+    # N=2 in sample but the prefix is the band's own name or an
+    # unambiguous community shorthand.
+    "aq": "Aqueous", "breakfast": "The Breakfast", "goose": "Goose",
+    "danieldonato": "Daniel Donato", "galactic": "Galactic",
+    "particle": "Particle", "guster": "Guster", "radiators": "Radiators",
+    "isd": "Infamous Stringdusters", "sts": "Sound Tribe Sector 9",
+    "fru": "Fruition", "osp": "Ominous Seapods",
+    "bhtm": "Big Head Todd & the Monsters", "jm": "John Mayer",
+    "tbt": "Trampled by Turtles",
 }
 
 DISC_MARKER = re.compile(
@@ -272,6 +296,10 @@ def read_info_txt(path: Path) -> str:
     older Windows), and occasionally cp1252. BOM sniffing handles the explicit
     cases; a zero-byte-density heuristic catches UTF-16-LE files saved without
     a BOM, which would otherwise come out as mojibake.
+
+    Mac TextEdit defaults to RTF when users save a file as `.txt` from the GUI,
+    so info.txt files in the wild sometimes arrive as RTF. We detect the
+    `{\\rtf` magic and strip control words / groups back to plain text.
     """
     try:
         raw = path.read_bytes()
@@ -280,26 +308,61 @@ def read_info_txt(path: Path) -> str:
     if not raw:
         return ""
     if raw.startswith(b"\xff\xfe"):
-        return raw.decode("utf-16-le", errors="replace")
-    if raw.startswith(b"\xfe\xff"):
-        return raw.decode("utf-16-be", errors="replace")
-    if raw.startswith(b"\xef\xbb\xbf"):
-        return raw.decode("utf-8-sig", errors="replace")
-    sample = raw[:1024]
-    if len(sample) >= 4:
-        odd_zeros = sample[1::2].count(0)
-        even_zeros = sample[0::2].count(0)
-        half = len(sample) // 2
-        if half and odd_zeros / half > 0.3 and odd_zeros > even_zeros:
-            return raw.decode("utf-16-le", errors="replace")
-        if half and even_zeros / half > 0.3 and even_zeros > odd_zeros:
-            return raw.decode("utf-16-be", errors="replace")
-    for enc in ("utf-8", "cp1252", "latin-1"):
-        try:
-            return raw.decode(enc)
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("utf-8", errors="replace")
+        text = raw.decode("utf-16-le", errors="replace")
+    elif raw.startswith(b"\xfe\xff"):
+        text = raw.decode("utf-16-be", errors="replace")
+    elif raw.startswith(b"\xef\xbb\xbf"):
+        text = raw.decode("utf-8-sig", errors="replace")
+    else:
+        sample = raw[:1024]
+        text = None
+        if len(sample) >= 4:
+            odd_zeros = sample[1::2].count(0)
+            even_zeros = sample[0::2].count(0)
+            half = len(sample) // 2
+            if half and odd_zeros / half > 0.3 and odd_zeros > even_zeros:
+                text = raw.decode("utf-16-le", errors="replace")
+            elif half and even_zeros / half > 0.3 and even_zeros > odd_zeros:
+                text = raw.decode("utf-16-be", errors="replace")
+        if text is None:
+            for enc in ("utf-8", "cp1252", "latin-1"):
+                try:
+                    text = raw.decode(enc)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            if text is None:
+                text = raw.decode("utf-8", errors="replace")
+    if text.lstrip().startswith("{\\rtf"):
+        text = _strip_rtf(text)
+    return text
+
+
+def _strip_rtf(text: str) -> str:
+    """Convert RTF source to plain text. Drops control words, font/color
+    tables, and unbalanced braces; keeps paragraph breaks via \\par/\\line."""
+    # Drop entire \fonttbl, \colortbl, \stylesheet, etc. groups (one level of
+    # nested braces supported). Optional \* destination marker handled.
+    text = re.sub(
+        r"\{\\(?:\*\\)?(?:fonttbl|colortbl|stylesheet|listtable|listoverridetable|rsidtbl|generator|info|filetbl|pict|themedata|datastore|latentstyles|xmlnstbl|revtbl|fldrslt|bkmkstart|bkmkend)\b[^{}]*(?:\{[^{}]*\}[^{}]*)*\}",
+        "",
+        text,
+    )
+    # Convert paragraph/line breaks to newlines.
+    text = re.sub(r"\\(?:par|line|pard)\b\s?", "\n", text)
+    # Decode \uXXXX? unicode escapes (RTF stores codepoint as decimal, optional ?).
+    text = re.sub(r"\\u(-?\d+)\??", lambda m: chr(int(m.group(1)) % 65536), text)
+    # Decode \'hh hex byte escapes (assume cp1252).
+    text = re.sub(r"\\'([0-9a-fA-F]{2})", lambda m: bytes([int(m.group(1), 16)]).decode("cp1252", errors="replace"), text)
+    # Drop remaining control words like \ansi, \cocoartf1138, \fs24, \cf2, etc.
+    text = re.sub(r"\\[a-zA-Z]+-?\d*\s?", "", text)
+    # Drop control symbols like \\ \{ \} (we already handled escapes we care about).
+    text = re.sub(r"\\[^a-zA-Z]", "", text)
+    # Strip leftover braces.
+    text = text.replace("{", "").replace("}", "")
+    # Collapse triple+ blank lines.
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def parse_info_txt(body: str) -> dict:
@@ -325,7 +388,13 @@ def parse_info_txt(body: str) -> dict:
     ]:
         m = re.search(pat, body, re.I)
         if m:
-            data[key] = m.group(1).strip().strip(",")
+            val = m.group(1).strip().strip(",")
+            # Taper "Location:" lines almost always describe mic placement,
+            # not a venue. Reject values that look like placement jargon so
+            # they don't win over real venue lines parsed later.
+            if key in ("venue", "artist") and _MIC_PLACEMENT.search(val):
+                continue
+            data[key] = val
 
     data["date"] = parse_date(body)
 
@@ -381,6 +450,22 @@ _VENUE_KEYWORDS = re.compile(
     re.I,
 )
 
+# Mic-placement shorthand — these lines describe where the taper stood, not a
+# venue or artist. ("FOB, 10ft DIN, mics clamped to the rail", "DFC / ORTF",
+# "Main Stage, at the SBD, ROC"). Reject any line whose dominant signal is
+# placement jargon.
+_MIC_PLACEMENT = re.compile(
+    r"\b(?:FOB|DFC|OTS|ROC|DIN|ORTF|NOS|XY|AB|M/?S|PAS|"
+    r"mics?|capsules?|pair|clamped|stand|stands|stack|stacks|"
+    r"omni|omnis|cards?|cardioid|hypercard|subcard|"
+    r"\d+\s*(?:ft|feet|'|\u2019|m|meters?)\s+(?:from|high|tall|up|back|off)|"
+    r"from\s+(?:the\s+)?(?:stage|soundboard|sbd|board)|"
+    r"(?:on|at)\s+(?:the\s+)?(?:stage|sbd|soundboard|board|rail)|"
+    r"row\s+[a-z]\b|right\s+of\s+center|left\s+of\s+center|"
+    r"right\s+stack|left\s+stack|balcony)\b",
+    re.I,
+)
+
 
 def _first_artist_line(nonblank: list[str]) -> str | None:
     """Return the first line that plausibly names the artist.
@@ -402,6 +487,8 @@ def _first_artist_line(nonblank: list[str]) -> str | None:
             continue
         if _VENUE_KEYWORDS.search(stripped):
             continue
+        if _MIC_PLACEMENT.search(stripped):
+            continue
         if _looks_like_city(stripped):
             continue
         # "Venue, City, ST" three-comma shape — also a venue line.
@@ -422,6 +509,8 @@ def _looks_like_venue(line: str) -> bool:
         return False
     low = line.lower()
     if any(tok in low for tok in ("http://", "https://", "@", "flac ", ".flac", ".shn", ".wav", "kbps", "khz")):
+        return False
+    if _MIC_PLACEMENT.search(line):
         return False
     return bool(re.search(r"[A-Z]", line))
 

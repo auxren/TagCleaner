@@ -62,6 +62,44 @@ class TestMicDetection:
     def test_no_mics(self):
         assert detect_source("gd1987-08-22.sbd").mics == []
 
+    @pytest.mark.parametrize("text,wanted", [
+        ("Schoeps CCM4V > Sound Devices 722", "Schoeps CCM4V"),
+        ("Schoeps CMC641 cards", "Schoeps CMC641"),
+        ("Sennheiser MD441 omni pair", "Sennheiser MD441"),
+        ("Sony PCM-M10 internal", "Sony PCM-M10"),
+        ("Sony TC-D5M cassette deck", "Sony TC-D5M"),
+        ("Microtech Gefell M300 matched", "MT Gefell M300"),
+        ("Milab VM-44 Link FOB", "Milab VM-44"),
+        ("Earthworks SR40V cards", "Earthworks SR40V"),
+        ("AKG CK91 capsule", "AKG CK91"),
+        ("nakamichi CR-7A deck", "Nak CR-7A"),
+        ("nak100 mics", "Nak 100"),
+        ("nak1k pair", "Nak 1k"),
+    ])
+    def test_corpus_mined_mics(self, text: str, wanted: str):
+        mics = detect_source(text).mics
+        assert any(wanted in m for m in mics), f"{wanted!r} not in {mics}"
+
+
+class TestRecorderDetection:
+    """Recorders/preamps surfaced from the etree corpus -- they aren't mics
+    strictly but they belong in the rig identifier label."""
+
+    @pytest.mark.parametrize("text,wanted", [
+        ("Tascam DR-680 24/96", "Tascam DR-680"),
+        ("Tascam DA-3000", "Tascam DA-3000"),
+        ("Tascam HD-P2 portable", "Tascam HD-P2"),
+        ("Edirol R-44 16/48", "Edirol R-44"),
+        ("Edirol R-09HR", "Edirol R-09HR"),
+        ("Edirol UA-5 preamp", "Edirol UA-5"),
+        ("Zoom H6 internal", "Zoom H6"),
+        ("Zoom F6 32-bit float", "Zoom F6"),
+        ("Sound Devices 722", "SD 722"),
+    ])
+    def test_recorder_models(self, text: str, wanted: str):
+        mics = detect_source(text).mics
+        assert any(wanted in m for m in mics), f"{wanted!r} not in {mics}"
+
 
 class TestCombined:
     def test_kind_and_mics_together(self):

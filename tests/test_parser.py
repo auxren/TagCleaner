@@ -221,6 +221,63 @@ class TestReadInfoTxt:
     def test_missing_file(self, tmp_path: Path):
         assert read_info_txt(tmp_path / "nope.txt") == ""
 
+    def test_rtf_stripped_to_plain(self, tmp_path: Path):
+        # Mac TextEdit's default RTF preamble — parser used to report this
+        # whole line as the artist. Real RTF always has a delimiter space (or
+        # non-letter) between a control word and following text.
+        p = tmp_path / "info.txt"
+        rtf = (
+            "{\\rtf1\\ansi\\ansicpg1252\\cocoartf1138\\cocoasubrtf510\n"
+            "{\\fonttbl\\f0\\fswiss\\fcharset0 Helvetica;}\n"
+            "{\\colortbl;\\red255\\green255\\blue255;}\n"
+            "\\paperw12240\\paperh15840\\margl1440\\margr1440\n"
+            "\\pard\\pardirnatural\n"
+            "\\f0\\fs24 \\cf0 Smashing Pumpkins\\par\n"
+            " 2010-12-05\\par\n"
+            " Verizon Wireless Theater, Houston, TX}"
+        )
+        p.write_bytes(rtf.encode("utf-8"))
+        text = read_info_txt(p)
+        assert "\\rtf" not in text
+        assert "cocoartf" not in text
+        assert "fonttbl" not in text
+        assert "Smashing Pumpkins" in text
+        assert "2010-12-05" in text
+        assert "Verizon Wireless Theater" in text
+
+
+class TestMicPlacementRejected:
+    """Mic-placement jargon (FOB, DFC, DIN, ORTF, 'mics @ 10ft') is recording
+    geometry, not venue or artist. These lines show up in real info.txt bodies
+    and used to get promoted to the artist or venue slot."""
+
+    @pytest.mark.parametrize("line", [
+        "Right of Center, FOB / Mics @ 10 ft. DIN",
+        "DFC / 6' from stage / DIN / mic stand @ 6'",
+        "Balcony, right stack, mics clamped to the rail",
+        "Main Stage, at the SBD, ROC",
+        "FOB, 10ft high, ORTF pair",
+    ])
+    def test_not_picked_as_artist(self, line: str):
+        # Body with placement line before a real artist line -- artist should
+        # be the real one, not the placement line.
+        body = f"{line}\nPhish\n1997-12-31\nMadison Square Garden, New York, NY\n"
+        data = parse_info_txt(body)
+        assert data.get("artist") == "Phish"
+
+    @pytest.mark.parametrize("line", [
+        "FOB / Mics @ 10 ft. DIN",
+        "DFC / 6' from stage / DIN",
+        "Balcony, right stack, mics clamped to the rail",
+    ])
+    def test_not_picked_as_venue(self, line: str):
+        body = f"Phish\n1997-12-31\n{line}\n"
+        data = parse_info_txt(body)
+        assert data.get("venue") != line
+        # And not a substring either — should fall through, not set venue.
+        if "venue" in data:
+            assert "FOB" not in data["venue"] and "DFC" not in data["venue"]
+
 
 class TestSplitVenueCityRegion:
     def test_state_code(self):

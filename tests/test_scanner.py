@@ -6,9 +6,11 @@ from pathlib import Path
 import pytest
 
 from tagcleaner.scanner import (
+    DISC_FOLDER_RE,
     _classify,
     _enumerate_folder,
     _fingerprint,
+    _is_multi_disc_parent,
     list_candidate_dirs,
     scan,
 )
@@ -231,6 +233,149 @@ class TestScan:
 
     def test_missing_root_returns_empty(self, tmp_path: Path):
         assert scan(tmp_path / "no-such-dir") == []
+
+
+class TestMultiDiscSubfolders:
+    """The scanner used to register each 'Disc 1' / 'Disc 2' subdir as its
+    own concert candidate, which meant the parent info.txt never got paired
+    with the audio and every disc came out at confidence 0.00."""
+
+    @pytest.mark.parametrize("name", [
+        "Disc 1", "Disc 2", "Disc 10", "disc 1", "disc1", "disc_01",
+        "CD 1", "CD 2", "cd2", "CD1", "cd_02",
+        "d1", "d2", "D01",
+        "Disc One", "Disc Two", "Disc Three",
+        "Set 1", "Set 2", "Set II", "set 1",
+        "Encore", "encore", "Early Show", "Late Show", "Matinee",
+    ])
+    def test_disc_folder_re_matches(self, name):
+        assert DISC_FOLDER_RE.match(name), name
+
+    @pytest.mark.parametrize("name", [
+        "1984-09-21 Disc 1",  # anchored: whole name must be disc marker
+        "rush1984-09-21",
+        "show",
+        "disk1.5",             # not a clean integer
+        "dataset",             # starts with 'd' but not 'd<digits>'
+    ])
+    def test_disc_folder_re_rejects(self, name):
+        assert not DISC_FOLDER_RE.match(name), name
+
+    def test_is_multi_disc_parent(self, tmp_path: Path, make_flac):
+        parent = tmp_path / "show"
+        (parent / "Disc 1").mkdir(parents=True)
+        (parent / "Disc 2").mkdir(parents=True)
+        make_flac(parent / "Disc 1" / "01.flac")
+        make_flac(parent / "Disc 2" / "01.flac")
+        subdirs = sorted((parent / n) for n in ("Disc 1", "Disc 2"))
+        assert _is_multi_disc_parent(subdirs)
+
+    def test_is_multi_disc_parent_needs_audio_in_every_disc(self, tmp_path: Path, make_flac):
+        parent = tmp_path / "show"
+        (parent / "Disc 1").mkdir(parents=True)
+        (parent / "Disc 2").mkdir(parents=True)
+        make_flac(parent / "Disc 1" / "01.flac")
+        # Disc 2 has no audio -- disqualifies the roll-up.
+        subdirs = sorted((parent / n) for n in ("Disc 1", "Disc 2"))
+        assert not _is_multi_disc_parent(subdirs)
+
+    def test_is_multi_disc_parent_rejects_mixed(self, tmp_path: Path, make_flac):
+        parent = tmp_path / "show"
+        (parent / "Disc 1").mkdir(parents=True)
+        (parent / "extras").mkdir(parents=True)
+        make_flac(parent / "Disc 1" / "01.flac")
+        make_flac(parent / "extras" / "01.flac")
+        subdirs = sorted((parent / n) for n in ("Disc 1", "extras"))
+        assert not _is_multi_disc_parent(subdirs)
+
+    def test_multi_disc_rolls_up_to_parent(self, tmp_path: Path, make_flac):
+        parent = tmp_path / "gd1990-12-12"
+        (parent / "Disc 1").mkdir(parents=True)
+        (parent / "Disc 2").mkdir(parents=True)
+        make_flac(parent / "Disc 1" / "01.flac")
+        make_flac(parent / "Disc 1" / "02.flac")
+        make_flac(parent / "Disc 2" / "01.flac")
+        (parent / "info.txt").write_text(
+            "Grateful Dead\n1990-12-12\nSet 1:\n01. a\n02. b\nSet 2:\n01. c\n",
+            encoding="utf-8",
+        )
+        out = list_candidate_dirs(tmp_path)
+        assert [p.name for p, _ in out] == ["gd1990-12-12"]
+
+    def test_multi_disc_enumerate_aggregates_audio(self, tmp_path: Path, make_flac):
+        parent = tmp_path / "gd1990-12-12"
+        (parent / "Disc 1").mkdir(parents=True)
+        (parent / "Disc 2").mkdir(parents=True)
+        make_flac(parent / "Disc 1" / "01.flac")
+        make_flac(parent / "Disc 1" / "02.flac")
+        make_flac(parent / "Disc 2" / "01.flac")
+        (parent / "info.txt").write_text("hi", encoding="utf-8")
+
+        enum = _enumerate_folder(parent)
+        assert enum is not None
+        host, audio, info, fp = enum
+        assert host == parent
+        # Disc 1 files first (alphanumeric disc order), then Disc 2.
+        assert [p.relative_to(parent).as_posix() for p in audio] == [
+            "Disc 1/01.flac", "Disc 1/02.flac", "Disc 2/01.flac",
+        ]
+        assert info is not None and info.name == "info.txt"
+        assert len(fp) == 40
+
+    def test_multi_disc_enumerate_inherits_info_from_disc(self, tmp_path: Path, make_flac):
+        """Parent has no info.txt, but Disc 1 does. Use the Disc 1 one."""
+        parent = tmp_path / "show"
+        (parent / "Disc 1").mkdir(parents=True)
+        (parent / "Disc 2").mkdir(parents=True)
+        make_flac(parent / "Disc 1" / "01.flac")
+        make_flac(parent / "Disc 2" / "01.flac")
+        (parent / "Disc 1" / "notes.txt").write_text("x", encoding="utf-8")
+        enum = _enumerate_folder(parent)
+        assert enum is not None
+        _, _, info, _ = enum
+        assert info is not None and info.name == "notes.txt"
+
+    def test_multi_disc_ordering_numeric_not_lexical(self, tmp_path: Path, make_flac):
+        parent = tmp_path / "show"
+        for d in ("Disc 1", "Disc 2", "Disc 10"):
+            (parent / d).mkdir(parents=True)
+            make_flac(parent / d / "01.flac")
+        enum = _enumerate_folder(parent)
+        assert enum is not None
+        _, audio, _, _ = enum
+        disc_order = [p.parent.name for p in audio]
+        assert disc_order == ["Disc 1", "Disc 2", "Disc 10"]
+
+    def test_multi_disc_fingerprint_disambiguates_same_filenames(
+        self, tmp_path: Path, make_flac,
+    ):
+        """Both discs have 01.flac with the same size. Old fingerprint would
+        collapse them to one entry; new one must not."""
+        single = tmp_path / "single"
+        single.mkdir()
+        make_flac(single / "01.flac")
+
+        multi = tmp_path / "multi"
+        (multi / "Disc 1").mkdir(parents=True)
+        (multi / "Disc 2").mkdir(parents=True)
+        make_flac(multi / "Disc 1" / "01.flac")
+        make_flac(multi / "Disc 2" / "01.flac")
+
+        enum_single = _enumerate_folder(single)
+        enum_multi = _enumerate_folder(multi)
+        assert enum_single is not None and enum_multi is not None
+        assert enum_single[3] != enum_multi[3]
+
+    def test_single_disc_folder_not_rolled_up(self, tmp_path: Path, make_flac):
+        """A lone 'Disc 1' folder under the root is still a concert
+        candidate on its own -- we only roll up when the parent has 2+
+        disc-named children."""
+        root = tmp_path
+        d = root / "Disc 1"
+        d.mkdir()
+        make_flac(d / "01.flac")
+        out = list_candidate_dirs(root)
+        assert [p.name for p, _ in out] == ["Disc 1"]
 
 
 class TestFingerprint:

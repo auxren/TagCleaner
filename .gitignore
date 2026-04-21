@@ -16,3 +16,6 @@ htmlcov/
 *.swp
 tagcleaner-drafts.json
 tagcleaner-report.txt
+
+# harvested research data (regenerable via scripts/harvest_etree.py)
+corpus/
