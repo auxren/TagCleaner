@@ -63,6 +63,26 @@ class TestBuildPlans:
         plans = build_plans(c)
         assert len(plans) == 2
 
+    def test_metadata_only_emits_one_plan_per_audio(self, tmp_path: Path, make_flac):
+        folder = tmp_path / "show"
+        audio = [make_flac(folder / f"0{i}.flac") for i in (1, 2, 3)]
+        # Intentional mismatch: only one track parsed, three audio files.
+        tracks = [Track(number=1, title="Only One")]
+        c = _concert(folder, audio, tracks)
+        plans = build_plans(c, metadata_only=True)
+        assert len(plans) == 3
+        assert all(p.track is None and p.title is None for p in plans)
+        assert all(p.artist == "Test Artist" for p in plans)
+
+    def test_metadata_only_works_with_no_tracks(self, tmp_path: Path, make_flac):
+        folder = tmp_path / "show"
+        audio = [make_flac(folder / "01.flac")]
+        c = _concert(folder, audio, tracks=[])
+        plans = build_plans(c, metadata_only=True)
+        assert len(plans) == 1
+        assert plans[0].title is None
+        assert plans[0].track is None
+
 
 class TestApplyPlansDryRun:
     def test_dry_run_leaves_file_untouched(self, tmp_path: Path, make_flac):
@@ -106,6 +126,33 @@ class TestApplyPlansInPlaceFLAC:
         f1 = FLAC(str(audio[0]))
         assert f1["DISCNUMBER"] == ["1"]
         assert f1["DISCTOTAL"] == ["2"]
+
+
+class TestApplyPlansMetadataOnly:
+    def test_preserves_existing_title_and_tracknumber(self, tmp_path: Path, make_flac):
+        folder = tmp_path / "show"
+        audio = make_flac(folder / "01.flac")
+        # Pre-populate with per-track tags that MUST survive the metadata-only
+        # write (the whole point: we don't have a reliable setlist to overwrite
+        # them with, so leave the per-file work alone).
+        pre = FLAC(str(audio))
+        pre["TITLE"] = "Existing Title"
+        pre["TRACKNUMBER"] = "07"
+        pre.save()
+
+        c = _concert(folder, [audio], tracks=[])
+        plans = build_plans(c, metadata_only=True)
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert all(r.ok for r in results)
+
+        f = FLAC(str(audio))
+        # Concert-level metadata gets stamped.
+        assert f["ARTIST"] == ["Test Artist"]
+        assert f["ALBUMARTIST"] == ["Test Artist"]
+        assert f["DATE"] == ["2000-01-01"]
+        # Per-track fields untouched.
+        assert f["TITLE"] == ["Existing Title"]
+        assert f["TRACKNUMBER"] == ["07"]
 
 
 class TestApplyPlansCopyTo:

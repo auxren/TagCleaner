@@ -205,9 +205,36 @@ class TestTrackTolerance:
         )
         code = main([str(tmp_path), "--yes", "--no-banner", "--track-tolerance", "0"])
         assert code == 0
-        # Strict mode → nothing tagged.
+        # Strict mode still applies concert-level metadata via the metadata-only
+        # fallback; per-track TITLE/TRACKNUMBER stay unwritten.
         f = FLAC(str(tmp_path / "Rush 1984-09-21" / "01 a.flac"))
-        assert "ARTIST" not in f
+        assert f["ARTIST"] == ["Rush"]
+        assert "TITLE" not in f
+        assert "TRACKNUMBER" not in f
+
+    def test_large_mismatch_falls_back_to_metadata_only(
+        self, tmp_path: Path, make_concert_tree,
+    ):
+        # 5 tracks in info.txt, 1 audio file — wildly past auto tolerance.
+        # Concert-level metadata still gets stamped, per-track tags do not.
+        make_concert_tree(
+            "Phish 1997-11-17 MSG",
+            audio=["show.flac"],
+            info_txt=(
+                "info.txt",
+                "Phish\n1997-11-17\nMadison Square Garden\nNew York, NY\nAUD\n\n"
+                "01. Ghost\n02. Wolfman's Brother\n03. Stash\n"
+                "04. Bathtub Gin\n05. Character Zero\n",
+            ),
+            root=tmp_path,
+        )
+        code = main([str(tmp_path), "--yes", "--no-banner"])
+        assert code == 0
+        f = FLAC(str(tmp_path / "Phish 1997-11-17 MSG" / "show.flac"))
+        assert f["ARTIST"] == ["Phish"]
+        assert f["DATE"] == ["1997-11-17"]
+        assert "TITLE" not in f
+        assert "TRACKNUMBER" not in f
 
 
 class TestErrorHandling:

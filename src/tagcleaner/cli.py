@@ -300,32 +300,54 @@ def _apply(
             skipped += 1
             console.print(f"  [yellow]⏭  skip[/] (low conf {c.confidence():.2f}) [dim]{c.folder.name}[/]")
             continue
-        if not c.tracks or not c.audio_files:
+        if not c.audio_files:
             skipped += 1
             continue
-        mismatch = abs(len(c.tracks) - len(c.audio_files))
-        if mismatch > 0 and mode is not Mode.DRY_RUN:
-            tolerance = _track_tolerance(
-                len(c.tracks), len(c.audio_files), args.track_tolerance,
-            )
-            if mismatch > tolerance:
-                console.print(
-                    f"  [red]⏭  skip[/] (track mismatch "
-                    f"{len(c.tracks)}/{len(c.audio_files)}, off by {mismatch}) "
-                    f"[dim]{c.folder.name}[/]"
-                )
+        metadata_only = False
+        if not c.tracks:
+            # No parsed setlist — fall back to artist/album/date tagging only
+            # (nothing to skip to; per-track tags stay as the files had them).
+            if mode is Mode.DRY_RUN:
                 skipped += 1
                 continue
+            metadata_only = True
             console.print(
-                f"  [yellow]⚠️  partial tag[/] "
-                f"({len(c.tracks)} tracks / {len(c.audio_files)} files) "
+                f"  [magenta]🧩 metadata-only[/] (no setlist parsed) "
                 f"[dim]{c.folder.name}[/]"
             )
+        elif mode is not Mode.DRY_RUN:
+            mismatch = abs(len(c.tracks) - len(c.audio_files))
+            if mismatch > 0:
+                tolerance = _track_tolerance(
+                    len(c.tracks), len(c.audio_files), args.track_tolerance,
+                )
+                if mismatch > tolerance:
+                    console.print(
+                        f"  [magenta]🧩 metadata-only[/] "
+                        f"(track mismatch {len(c.tracks)}/{len(c.audio_files)}, "
+                        f"off by {mismatch}) [dim]{c.folder.name}[/]"
+                    )
+                    metadata_only = True
+                else:
+                    console.print(
+                        f"  [yellow]⚠️  partial tag[/] "
+                        f"({len(c.tracks)} tracks / {len(c.audio_files)} files) "
+                        f"[dim]{c.folder.name}[/]"
+                    )
+        if metadata_only and not (c.artist or c.date):
+            # Nothing useful to stamp if we don't even have an artist or date.
+            console.print(
+                f"  [red]⏭  skip[/] (no artist/date to tag) "
+                f"[dim]{c.folder.name}[/]"
+            )
+            skipped += 1
+            continue
         source_root = args.path.resolve()
         plans = build_plans(
             c,
             copy_to_root=args.copy_to.resolve() if args.copy_to else None,
             source_root=source_root,
+            metadata_only=metadata_only,
         )
         results = apply_plans(plans, mode)
         folder_fails = 0
