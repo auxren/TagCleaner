@@ -39,6 +39,16 @@ from .scanner import scan
 from .setlistfm import SetlistFmClient, SetlistFmError, enrich, merge_enrichment
 from .tagger import Mode, apply_plans, build_plans
 
+# Linux filesystems can hand us filenames with non-UTF-8 bytes; Python
+# decodes those as lone UTF-16 surrogates via surrogateescape, which then
+# crash UTF-8 stdout writes inside rich. Switch the error handler so bad
+# chars become U+FFFD instead of raising.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except (AttributeError, OSError):
+        pass
+
 console = Console()
 
 
