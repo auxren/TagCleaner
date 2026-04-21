@@ -44,6 +44,20 @@ DISC_FOLDER_RE = re.compile(
     re.I,
 )
 
+# Names that are clearly format-bucket wrappers, not real concert folders.
+# Used to collapse parent/{FLAC,MP3,...}/audio.flac into the parent.
+_FORMAT_WRAPPER_NAMES = frozenset({
+    "flac", "flac16", "flac24", "flac1644", "flac2448",
+    "mp3", "wav", "shn", "shnf", "audio", "files", "music", "tracks",
+})
+
+# Trailing disc-index suffix used by _shared_prefix_disc_set to recognise
+# sets like "BOOKER T 1" / "BOOKER T 2" or bare "1" / "2".
+_PREFIX_DISC_SUFFIX_RE = re.compile(
+    r"^(.*?)[\s_\-]*(\d{1,2}|one|two|three|four|five|six|seven|eight)\s*$",
+    re.I,
+)
+
 # Map a disc-folder name to an integer for ordering. "Disc 10" must sort after
 # "Disc 2", which string sort gets wrong. Returns ``None`` for non-numeric
 # markers (Encore, Early Show) so they sort last by name.
@@ -123,28 +137,68 @@ def _collect_candidates(
         if inner is not None and inner[0]:
             out.append((folder, mtime))
             return
-    if _is_multi_disc_parent(subdirs):
+    if _is_multi_disc_parent(folder, subdirs):
         out.append((folder, mtime))
         return
     for sub in subdirs:
         _collect_candidates(sub, out, depth=depth + 1, max_depth=max_depth)
 
 
-def _is_multi_disc_parent(subdirs: list[Path]) -> bool:
-    """True when *subdirs* is a set of 2+ disc-named folders each containing
-    audio. Used to treat ``show/Disc 1/*.flac`` + ``show/Disc 2/*.flac`` as a
-    single multi-disc concert rooted at ``show``. Any non-disc-named subdir
-    disqualifies the whole parent -- mixed layouts fall back to per-subdir
-    descent so nothing gets hidden."""
+def _is_multi_disc_parent(parent: Path, subdirs: list[Path]) -> bool:
+    """True when *subdirs* hold a single multi-disc concert.
+
+    The parent qualifies when 2+ audio-bearing children are all disc-shaped.
+    "Disc-shaped" means either matching :data:`DISC_FOLDER_RE` (Disc 1, CD 2,
+    Encore, Set 1) OR sharing a common prefix that differs only by a trailing
+    disc index (BOOKER T 1 / BOOKER T 2, bare 1 / 2). Non-audio peers
+    (Artwork, Scans) are tolerated and ignored. Any audio-bearing peer that
+    is *not* disc-shaped disqualifies the rollup so standalone shows
+    accidentally placed alongside discs aren't hidden.
+
+    The shared-prefix branch additionally requires the parent to look like a
+    concert (date in name or info.txt present), since otherwise sibling
+    artist folders ``show1``/``show2``/``show3`` at a library root would
+    collapse into a single bogus rollup."""
+    audio_subs: list[Path] = []
+    parent_classified = _classify(parent)
+    parent_info = bool(parent_classified and parent_classified[1])
+    for sub in subdirs:
+        inner = _classify(sub)
+        if inner is not None and inner[0]:
+            audio_subs.append(sub)
+    if len(audio_subs) < 2:
+        return False
+    if all(DISC_FOLDER_RE.match(s.name) for s in audio_subs):
+        return True
+    if not _shared_prefix_disc_set(audio_subs):
+        return False
+    return parent_info or _name_has_date(parent.name)
+
+
+def _name_has_date(name: str) -> bool:
+    """Cheap date-shape check used as a concert-folder signal. Matches
+    YYYY-MM-DD, YYYY.MM.DD, YYYYMMDD, YY-MM-DD."""
+    return bool(re.search(r"(?:19|20)?\d{2}[-._]?\d{2}[-._]?\d{2}", name))
+
+
+def _shared_prefix_disc_set(subdirs: list[Path]) -> bool:
+    """True when every name shares a common prefix and differs only by a
+    trailing disc index. Catches sibling sets the strict regex misses:
+    ``BOOKER T 1`` / ``BOOKER T 2``, ``1`` / ``2``, ``Acoustic 1`` /
+    ``Acoustic 2``."""
     if len(subdirs) < 2:
         return False
+    bases: list[str] = []
+    suffixes: list[str] = []
     for sub in subdirs:
-        if not DISC_FOLDER_RE.match(sub.name):
+        m = _PREFIX_DISC_SUFFIX_RE.match(sub.name.strip())
+        if not m:
             return False
-        inner = _classify(sub)
-        if inner is None or not inner[0]:
-            return False
-    return True
+        bases.append(m.group(1).strip().rstrip(" -_").lower())
+        suffixes.append(m.group(2).lower())
+    if len(set(suffixes)) != len(suffixes):
+        return False
+    return all(b == bases[0] for b in bases)
 
 
 def _looks_like_unpack_wrapper(outer: str, inner: str) -> bool:
@@ -162,6 +216,8 @@ def _looks_like_unpack_wrapper(outer: str, inner: str) -> bool:
     if not o or not i:
         return False
     if o == i:
+        return True
+    if i in _FORMAT_WRAPPER_NAMES:
         return True
     shorter, longer = (o, i) if len(o) <= len(i) else (i, o)
     return len(shorter) >= 6 and longer.startswith(shorter)
@@ -239,7 +295,7 @@ def _enumerate_folder(
     if audio:
         fp = _fingerprint(folder.name, audio, info, rel_to=folder)
         return folder, [p for p, _ in audio], (info[0][0] if info else None), fp
-    if _is_multi_disc_parent(subdirs):
+    if _is_multi_disc_parent(folder, subdirs):
         all_audio: list[tuple[Path, int]] = []
         merged_info: list[tuple[Path, int]] = list(info)
         for disc_dir in sorted(subdirs, key=lambda p: _disc_sort_key(p.name)):

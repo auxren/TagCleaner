@@ -268,7 +268,7 @@ class TestMultiDiscSubfolders:
         make_flac(parent / "Disc 1" / "01.flac")
         make_flac(parent / "Disc 2" / "01.flac")
         subdirs = sorted((parent / n) for n in ("Disc 1", "Disc 2"))
-        assert _is_multi_disc_parent(subdirs)
+        assert _is_multi_disc_parent(parent, subdirs)
 
     def test_is_multi_disc_parent_needs_audio_in_every_disc(self, tmp_path: Path, make_flac):
         parent = tmp_path / "show"
@@ -277,7 +277,7 @@ class TestMultiDiscSubfolders:
         make_flac(parent / "Disc 1" / "01.flac")
         # Disc 2 has no audio -- disqualifies the roll-up.
         subdirs = sorted((parent / n) for n in ("Disc 1", "Disc 2"))
-        assert not _is_multi_disc_parent(subdirs)
+        assert not _is_multi_disc_parent(parent, subdirs)
 
     def test_is_multi_disc_parent_rejects_mixed(self, tmp_path: Path, make_flac):
         parent = tmp_path / "show"
@@ -286,7 +286,53 @@ class TestMultiDiscSubfolders:
         make_flac(parent / "Disc 1" / "01.flac")
         make_flac(parent / "extras" / "01.flac")
         subdirs = sorted((parent / n) for n in ("Disc 1", "extras"))
-        assert not _is_multi_disc_parent(subdirs)
+        assert not _is_multi_disc_parent(parent, subdirs)
+
+    def test_is_multi_disc_parent_tolerates_artwork_peer(self, tmp_path: Path, make_flac):
+        # Common case: parent has Disc 1 / Disc 2 / Artwork (no audio in Artwork).
+        # Should still roll up.
+        parent = tmp_path / "gd1990-12-12"
+        for d in ("Disc 1", "Disc 2", "Artwork"):
+            (parent / d).mkdir(parents=True)
+        make_flac(parent / "Disc 1" / "01.flac")
+        make_flac(parent / "Disc 2" / "01.flac")
+        (parent / "Artwork" / "cover.jpg").write_bytes(b"\xff\xd8\xff\xe0")
+        subdirs = sorted((parent / n) for n in ("Artwork", "Disc 1", "Disc 2"))
+        assert _is_multi_disc_parent(parent, subdirs)
+
+    def test_is_multi_disc_parent_shared_prefix_needs_concert_signal(
+        self, tmp_path: Path, make_flac,
+    ):
+        # 'show1'/'show2'/'show3' siblings under a non-concert root must NOT
+        # roll up — they're sibling concerts, not discs.
+        for s in ("show1", "show2", "show3"):
+            (tmp_path / s).mkdir()
+            make_flac(tmp_path / s / "01.flac")
+        subdirs = sorted(tmp_path / s for s in ("show1", "show2", "show3"))
+        assert not _is_multi_disc_parent(tmp_path, subdirs)
+
+    def test_is_multi_disc_parent_shared_prefix_with_date_in_parent(
+        self, tmp_path: Path, make_flac,
+    ):
+        # Concert-shaped parent (date in name) lets shared-prefix sets through.
+        parent = tmp_path / "BUDDY MILES 1972-05-22"
+        for d in ("BOOKER T 1", "BOOKER T 2"):
+            (parent / d).mkdir(parents=True)
+            make_flac(parent / d / "01.flac")
+        subdirs = sorted(parent / d for d in ("BOOKER T 1", "BOOKER T 2"))
+        assert _is_multi_disc_parent(parent, subdirs)
+
+    def test_is_multi_disc_parent_bare_digits_with_info_txt(
+        self, tmp_path: Path, make_flac,
+    ):
+        parent = tmp_path / "concert"
+        (parent / "1").mkdir(parents=True)
+        (parent / "2").mkdir(parents=True)
+        make_flac(parent / "1" / "01.flac")
+        make_flac(parent / "2" / "01.flac")
+        (parent / "info.txt").write_text("Phish\n1997-12-31\n", encoding="utf-8")
+        subdirs = sorted(parent / d for d in ("1", "2"))
+        assert _is_multi_disc_parent(parent, subdirs)
 
     def test_multi_disc_rolls_up_to_parent(self, tmp_path: Path, make_flac):
         parent = tmp_path / "gd1990-12-12"
@@ -376,6 +422,25 @@ class TestMultiDiscSubfolders:
         make_flac(d / "01.flac")
         out = list_candidate_dirs(root)
         assert [p.name for p, _ in out] == ["Disc 1"]
+
+    def test_format_wrapper_collapses_to_parent(self, tmp_path: Path, make_flac):
+        """parent/FLAC/audio.flac unpack pattern -- treat parent as the
+        concert (the FLAC subfolder is just a format bucket)."""
+        parent = tmp_path / "Black Sabbath - Tokyo 1980-11-16"
+        flac_dir = parent / "FLAC"
+        flac_dir.mkdir(parents=True)
+        make_flac(flac_dir / "01.flac")
+        out = list_candidate_dirs(tmp_path)
+        assert [p.name for p, _ in out] == ["Black Sabbath - Tokyo 1980-11-16"]
+
+    def test_artwork_peer_lets_disc_set_roll_up(self, tmp_path: Path, make_flac):
+        parent = tmp_path / "show"
+        for d in ("Disc 1", "Disc 2"):
+            (parent / d).mkdir(parents=True)
+            make_flac(parent / d / "01.flac")
+        (parent / "Scans").mkdir()  # no audio inside
+        out = list_candidate_dirs(tmp_path)
+        assert [p.name for p, _ in out] == ["show"]
 
 
 class TestFingerprint:
