@@ -13,8 +13,21 @@ from typing import Iterable
 
 from dateutil import parser as dateparser
 
+from .lexicon import Lexicon
 from .models import Concert, Track
 from .sources import detect_source
+
+# Parent-folder names that look tempting to treat as an artist but almost
+# never are in a bootleg library ("/Music/Tapes/<concert>/" → parent is the
+# library root). Matched case-insensitively against the normalized parent
+# name before consulting the lexicon.
+_NOT_AN_ARTIST = frozenset({
+    "tapes", "bootlegs", "concerts", "live", "shows", "downloads",
+    "music", "archive", "archives", "audio", "recordings", "files",
+    "sbd", "aud", "flac", "mp3", "shn", "wav", "cd", "dvd",
+    "new", "unsorted", "misc", "various", "various artists",
+    "library", "collection",
+})
 
 # Dates can sit flush against an artist abbreviation ('los1996-03-20') or
 # inside an underscore-joined filename ('SRV_1985.0725'), so we don't require
@@ -677,10 +690,34 @@ def _split_city_region(line: str) -> tuple[str, str | None]:
     return parts[0], None
 
 
+def _lexicon_artist_from_parent(folder: Path, lexicon: Lexicon) -> str | None:
+    """Ask the lexicon whether the parent folder names a known artist.
+
+    Date-first folders (``/Tapes/Black Sabbath/1969-XX-XX Show/``) leave the
+    parser without anything to guess from, but the parent directory usually
+    *is* the artist. We only accept the parent if the lexicon already knows
+    that spelling — that's the self-bootstrapping safety net.
+    """
+    parent = folder.parent
+    if parent is None or parent == folder:
+        return None
+    name = parent.name
+    if not name or name in (".", "/"):
+        return None
+    if name.lower() in _NOT_AN_ARTIST:
+        return None
+    # Bare years / dates — these are organisational wrappers, not artists.
+    if _first_date_position(name) == 0 or YEAR_ONLY.fullmatch(name.strip()):
+        return None
+    return lexicon.match_artist(name)
+
+
 def build_concert(
     folder: Path,
     audio_files: Iterable[Path],
     info_txt: Path | None,
+    *,
+    lexicon: Lexicon | None = None,
 ) -> Concert:
     audio = list(audio_files)
     body = read_info_txt(info_txt) if info_txt else ""
@@ -703,6 +740,18 @@ def build_concert(
         city, region2 = _city_from_folder(folder_name)
         if city and not region:
             region = region2
+
+    if lexicon is not None:
+        if not artist:
+            artist = _lexicon_artist_from_parent(folder, lexicon)
+        else:
+            match = lexicon.match_artist(artist)
+            if match:
+                artist = match
+        if venue:
+            match = lexicon.match_venue(venue)
+            if match:
+                venue = match
 
     source = detect_source(folder_name, filenames, body)
 

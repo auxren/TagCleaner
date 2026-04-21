@@ -34,6 +34,7 @@ from .history import (
     save_history,
     should_skip as history_should_skip,
 )
+from .lexicon import LEXICON_FILENAME, Lexicon
 from .models import Concert
 from .scanner import scan
 from .setlistfm import SetlistFmClient, SetlistFmError, enrich, merge_enrichment
@@ -72,6 +73,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Do not read or write the history file.")
     p.add_argument("--rescan-all", action="store_true",
                    help="Ignore history for this run (force re-parse of every folder).")
+    p.add_argument("--lexicon", type=Path, metavar="FILE",
+                   help=f"Artist/venue lexicon path (default: <path>/{LEXICON_FILENAME}).")
+    p.add_argument("--no-lexicon", action="store_true",
+                   help="Do not build or consult the artist/venue lexicon.")
     p.add_argument("--min-confidence", type=float, default=0.5,
                    help="Skip concerts below this confidence in non-dry-run modes (default: 0.5).")
     p.add_argument("--track-tolerance", type=int, default=-1, metavar="N",
@@ -147,6 +152,7 @@ def _scan_with_progress(
     copy_to: Path | None,
     rescan_all: bool,
     plain: bool = False,
+    lexicon: Lexicon | None = None,
 ) -> tuple[list[tuple[Concert, str, float]], list[HistoryEntry]]:
     """Run scanner.scan() behind a progress UI.
 
@@ -182,13 +188,13 @@ def _scan_with_progress(
         return False
 
     if plain:
-        fresh = _scan_plain(root, pre_skip=_pre_skip, skip=_skip)
+        fresh = _scan_plain(root, pre_skip=_pre_skip, skip=_skip, lexicon=lexicon)
     else:
-        fresh = _scan_animated(root, pre_skip=_pre_skip, skip=_skip)
+        fresh = _scan_animated(root, pre_skip=_pre_skip, skip=_skip, lexicon=lexicon)
     return fresh, skipped
 
 
-def _scan_animated(root, *, pre_skip, skip):
+def _scan_animated(root, *, pre_skip, skip, lexicon=None):
     width = max(48, min((console.size.width or 80) - 8, 78))
     display = ScanDisplay(staff_width=width)
     with Live(display, console=console, refresh_per_second=12, transient=True):
@@ -199,10 +205,11 @@ def _scan_animated(root, *, pre_skip, skip):
             on_folder=display.on_folder,
             on_skip=display.on_skip,
             on_done=lambda c, i, t: display.on_done(c),
+            lexicon=lexicon,
         )
 
 
-def _scan_plain(root, *, pre_skip, skip):
+def _scan_plain(root, *, pre_skip, skip, lexicon=None):
     """Plain one-line Progress bar. Safer on terminals where the animated
     panel duplicates in scrollback."""
     progress = Progress(
@@ -231,6 +238,7 @@ def _scan_plain(root, *, pre_skip, skip):
             skip=skip,
             on_folder=_on_folder,
             on_skip=_on_skip,
+            lexicon=lexicon,
         )
 
 
@@ -398,6 +406,28 @@ def _resolve_history_path(args: argparse.Namespace) -> Path | None:
     return None
 
 
+def _resolve_lexicon_path(args: argparse.Namespace) -> Path | None:
+    if args.no_lexicon:
+        return None
+    if args.lexicon:
+        return args.lexicon
+    if args.path.is_dir():
+        return args.path / LEXICON_FILENAME
+    return None
+
+
+def _build_lexicon(history: History, path: Path | None) -> Lexicon | None:
+    """Rebuild the lexicon from history entries, persist it if possible."""
+    if path is None:
+        return None
+    lex = Lexicon.from_history(history)
+    try:
+        lex.save(path)
+    except OSError as exc:
+        console.print(f"[yellow]⚠️  could not save lexicon: {exc}[/]")
+    return lex
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     mode = _mode(args)
@@ -407,6 +437,13 @@ def main(argv: list[str] | None = None) -> int:
 
     history_path = _resolve_history_path(args)
     history = load_history(history_path) if history_path else History()
+    lexicon_path = _resolve_lexicon_path(args)
+    lexicon = _build_lexicon(history, lexicon_path)
+    if lexicon is not None and (lexicon.artists or lexicon.venues):
+        console.print(
+            f"[bright_black]📚 Lexicon: {len(lexicon.artists)} artists, "
+            f"{len(lexicon.venues)} venues[/]"
+        )
 
     skipped_entries: list[HistoryEntry] = []
     if args.load_drafts:
@@ -423,6 +460,7 @@ def main(argv: list[str] | None = None) -> int:
             copy_to=args.copy_to,
             rescan_all=args.rescan_all,
             plain=args.plain,
+            lexicon=lexicon,
         )
         concerts = [c for c, _fp, _mt in fresh]
         for concert, fp, mtime in fresh:
@@ -438,6 +476,7 @@ def main(argv: list[str] | None = None) -> int:
     if not concerts and not skipped_entries:
         console.print("[yellow]🤷 No concert folders found.[/]")
         _save_history_if_enabled(history, history_path)
+        _save_lexicon_if_enabled(history, lexicon_path)
         return 0
 
     if args.enrich_setlistfm:
@@ -470,11 +509,13 @@ def main(argv: list[str] | None = None) -> int:
     if mode is Mode.DRY_RUN:
         console.print("\n[bold cyan]🧪 Dry run — no files modified.[/]")
         _save_history_if_enabled(history, history_path)
+        _save_lexicon_if_enabled(history, lexicon_path)
         return 0
 
     if not concerts:
         console.print("\n[bright_black]Nothing new to tag — history already covers every folder.[/]")
         _save_history_if_enabled(history, history_path)
+        _save_lexicon_if_enabled(history, lexicon_path)
         return 0
 
     if not args.yes:
@@ -486,10 +527,12 @@ def main(argv: list[str] | None = None) -> int:
         if not _confirm(f"Proceed to {action}?"):
             console.print("[yellow]✋ Aborted.[/]")
             _save_history_if_enabled(history, history_path)
+            _save_lexicon_if_enabled(history, lexicon_path)
             return 0
 
     code = _apply(concerts, args, mode, history)
     _save_history_if_enabled(history, history_path)
+    _save_lexicon_if_enabled(history, lexicon_path)
     return code
 
 
@@ -500,6 +543,16 @@ def _save_history_if_enabled(history: History, path: Path | None) -> None:
         save_history(history, path)
     except OSError as exc:
         console.print(f"[yellow]⚠️  could not save history: {exc}[/]")
+
+
+def _save_lexicon_if_enabled(history: History, path: Path | None) -> None:
+    if path is None:
+        return
+    lex = Lexicon.from_history(history)
+    try:
+        lex.save(path)
+    except OSError as exc:
+        console.print(f"[yellow]⚠️  could not save lexicon: {exc}[/]")
 
 
 if __name__ == "__main__":

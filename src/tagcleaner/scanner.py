@@ -22,6 +22,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Callable, Optional
 
+from .lexicon import Lexicon
 from .parser import build_concert
 from .models import Concert
 
@@ -152,6 +153,9 @@ def iter_concert_folders(root: Path) -> Iterator[tuple[Path, list[Path], Path | 
             continue
         _host, audio, info, _fp = enum
         yield folder, audio, info
+
+
+
 
 
 def list_candidate_dirs(root: Path, *, max_depth: int = 8) -> list[tuple[Path, float]]:
@@ -316,6 +320,7 @@ def scan(
     on_folder: Callable[[Path, int, int], None] | None = None,
     on_skip: Callable[[Path, int, int], None] | None = None,
     on_done: Callable[[Concert, int, int], None] | None = None,
+    lexicon: Lexicon | None = None,
 ) -> list[tuple[Concert, str, float]]:
     """Parse every concert folder under *root*.
 
@@ -355,7 +360,7 @@ def scan(
             continue
         if on_folder is not None:
             on_folder(folder, idx, total)
-        concert = build_concert(folder, audio, info)
+        concert = build_concert(folder, audio, info, lexicon=lexicon)
         results.append((concert, fp, mtime))
         if on_done is not None:
             on_done(concert, idx, total)
