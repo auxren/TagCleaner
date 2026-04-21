@@ -112,6 +112,47 @@ class TestMatchVenue:
         assert lex.match_venue("Wollman Rink") is None
 
 
+class TestAdd:
+    def test_add_new_artist(self):
+        lex = Lexicon()
+        canon = lex.add_artist("Black Sabbath")
+        assert canon == "Black Sabbath"
+        assert lex.artists == {"Black Sabbath": 1}
+        # Match now returns it with default min_count=2? No — count is 1.
+        assert lex.match_artist("Black Sabbath") is None
+        # Adding again bumps count past the threshold.
+        lex.add_artist("Black Sabbath")
+        assert lex.match_artist("Black Sabbath") == "Black Sabbath"
+
+    def test_add_count_boost(self):
+        """A batch answer (N siblings all the same artist) can boost past
+        the min-count threshold in a single call."""
+        lex = Lexicon()
+        lex.add_artist("Black Sabbath", count=5)
+        assert lex.artists == {"Black Sabbath": 5}
+        assert lex.match_artist("Black Sabbath") == "Black Sabbath"
+
+    def test_add_merges_case_variants(self):
+        lex = Lexicon(artists={"black sabbath": 1})
+        canon = lex.add_artist("Black Sabbath", count=3)
+        # The new, more-common Title Case form wins as canonical.
+        assert canon == "Black Sabbath"
+        assert "black sabbath" not in lex.artists
+        assert lex.artists["Black Sabbath"] == 4
+
+    def test_add_rejects_blank(self):
+        lex = Lexicon()
+        with pytest.raises(ValueError):
+            lex.add_artist("")
+        with pytest.raises(ValueError):
+            lex.add_artist("   ")
+
+    def test_add_venue(self):
+        lex = Lexicon()
+        lex.add_venue("Madison Square Garden", count=2)
+        assert lex.match_venue("madison square garden") == "Madison Square Garden"
+
+
 class TestSaveLoad:
     def test_roundtrip(self, tmp_path: Path):
         lex = Lexicon(

@@ -77,6 +77,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                    help=f"Artist/venue lexicon path (default: <path>/{LEXICON_FILENAME}).")
     p.add_argument("--no-lexicon", action="store_true",
                    help="Do not build or consult the artist/venue lexicon.")
+    p.add_argument("--prompt-unknown", action="store_true",
+                   help="Ask for an artist on each concert the parser couldn't resolve. "
+                        "Answers feed the lexicon for future scans.")
     p.add_argument("--min-confidence", type=float, default=0.5,
                    help="Skip concerts below this confidence in non-dry-run modes (default: 0.5).")
     p.add_argument("--track-tolerance", type=int, default=-1, metavar="N",
@@ -272,6 +275,101 @@ def _confirm(prompt: str) -> bool:
     except EOFError:
         return False
     return ans in ("y", "yes")
+
+
+def _prompt_unknown_artists(
+    concerts: list[Concert],
+    lexicon: Lexicon | None,
+    lexicon_path: Path | None,
+) -> None:
+    """Ask the user for an artist on each concert that has none.
+
+    Concerts sharing a parent directory are grouped so the user answers
+    once per folder-of-shows instead of once per show. Answers go back
+    into the concert, into the lexicon (so later concerts in the same
+    run canonicalise against them), and into the lexicon file on disk
+    after every answer — a Ctrl-C never loses what was already typed.
+    """
+    if lexicon is None or not sys.stdin.isatty():
+        return
+    unknowns = [c for c in concerts if not c.artist]
+    if not unknowns:
+        return
+
+    groups: dict[Path, list[Concert]] = {}
+    for c in unknowns:
+        groups.setdefault(c.folder.parent, []).append(c)
+
+    console.print(
+        f"\n[bold yellow]❓ {len(unknowns)} concert(s) across "
+        f"{len(groups)} folder(s) have no artist.[/]"
+    )
+    console.print(
+        "[bright_black]   Type a name to fill it in, empty to skip, "
+        "'q' to stop asking.[/]\n"
+    )
+
+    stopped = False
+    for parent, siblings in groups.items():
+        if stopped:
+            break
+        answer = _prompt_for_group(parent, siblings)
+        if answer is None:
+            stopped = True
+            continue
+        if not answer:
+            continue
+        canonical = lexicon.match_artist(answer) or answer
+        lexicon.add_artist(canonical, count=len(siblings))
+        for c in siblings:
+            c.artist = canonical
+            if "artist unknown" in c.issues:
+                c.issues.remove("artist unknown")
+        console.print(
+            f"   [green]→[/] tagged {len(siblings)} concert(s) as "
+            f"[bold]{canonical}[/]"
+        )
+        if lexicon_path is not None:
+            try:
+                lexicon.save(lexicon_path)
+            except OSError as exc:
+                console.print(f"   [yellow]⚠️  could not save lexicon: {exc}[/]")
+
+
+def _prompt_for_group(parent: Path, siblings: list[Concert]) -> str | None:
+    """Ask the user for one artist name covering *siblings*.
+
+    Returns the typed answer (possibly empty to skip the group), or
+    ``None`` if the user asked to stop.
+    """
+    if len(siblings) == 1:
+        c = siblings[0]
+        console.print(f"[bold]{c.folder.name}[/]")
+        details: list[str] = []
+        if c.date: details.append(f"date {c.date}")
+        if c.venue: details.append(f"venue {c.venue}")
+        if c.city: details.append(f"city {c.city}")
+        if c.tracks: details.append(f"{len(c.tracks)} tracks")
+        if details:
+            console.print(f"  [bright_black]{', '.join(details)}[/]")
+    else:
+        console.print(
+            f"[bold]{parent.name}/[/] "
+            f"[bright_black]({len(siblings)} concerts)[/]"
+        )
+        for c in siblings[:4]:
+            console.print(f"  [bright_black]- {c.folder.name}[/]")
+        if len(siblings) > 4:
+            console.print(f"  [bright_black]  ... and {len(siblings) - 4} more[/]")
+    try:
+        ans = input("artist > ").strip()
+    except (EOFError, KeyboardInterrupt):
+        console.print()
+        return None
+    console.print()
+    if ans.lower() in ("q", "quit", "exit"):
+        return None
+    return ans
 
 
 def _track_tolerance(track_count: int, audio_count: int, override: int) -> int:
@@ -500,8 +598,11 @@ def main(argv: list[str] | None = None) -> int:
     if not concerts and not skipped_entries:
         console.print("[yellow]🤷 No concert folders found.[/]")
         _save_history_if_enabled(history, history_path)
-        _save_lexicon_if_enabled(history, lexicon_path)
+        _save_lexicon_if_enabled(lexicon, lexicon_path)
         return 0
+
+    if args.prompt_unknown:
+        _prompt_unknown_artists(concerts, lexicon, lexicon_path)
 
     if args.enrich_setlistfm:
         if not args.setlistfm_key:
@@ -533,13 +634,13 @@ def main(argv: list[str] | None = None) -> int:
     if mode is Mode.DRY_RUN:
         console.print("\n[bold cyan]🧪 Dry run — no files modified.[/]")
         _save_history_if_enabled(history, history_path)
-        _save_lexicon_if_enabled(history, lexicon_path)
+        _save_lexicon_if_enabled(lexicon, lexicon_path)
         return 0
 
     if not concerts:
         console.print("\n[bright_black]Nothing new to tag — history already covers every folder.[/]")
         _save_history_if_enabled(history, history_path)
-        _save_lexicon_if_enabled(history, lexicon_path)
+        _save_lexicon_if_enabled(lexicon, lexicon_path)
         return 0
 
     if not args.yes:
@@ -551,12 +652,12 @@ def main(argv: list[str] | None = None) -> int:
         if not _confirm(f"Proceed to {action}?"):
             console.print("[yellow]✋ Aborted.[/]")
             _save_history_if_enabled(history, history_path)
-            _save_lexicon_if_enabled(history, lexicon_path)
+            _save_lexicon_if_enabled(lexicon, lexicon_path)
             return 0
 
     code = _apply(concerts, args, mode, history)
     _save_history_if_enabled(history, history_path)
-    _save_lexicon_if_enabled(history, lexicon_path)
+    _save_lexicon_if_enabled(lexicon, lexicon_path)
     return code
 
 
@@ -569,12 +670,11 @@ def _save_history_if_enabled(history: History, path: Path | None) -> None:
         console.print(f"[yellow]⚠️  could not save history: {exc}[/]")
 
 
-def _save_lexicon_if_enabled(history: History, path: Path | None) -> None:
-    if path is None:
+def _save_lexicon_if_enabled(lexicon: Lexicon | None, path: Path | None) -> None:
+    if path is None or lexicon is None:
         return
-    lex = Lexicon.from_history(history)
     try:
-        lex.save(path)
+        lexicon.save(path)
     except OSError as exc:
         console.print(f"[yellow]⚠️  could not save lexicon: {exc}[/]")
 

@@ -76,6 +76,16 @@ class Lexicon:
     ) -> Optional[str]:
         return _match(candidate, self.venues, self._venue_index, min_count)
 
+    def add_artist(self, name: str, count: int = 1) -> str:
+        """Add *name* to the lexicon (or bump its count) and return the
+        canonical spelling now stored. A user-supplied name that
+        normalises to an existing entry merges with it; a brand-new name
+        is kept verbatim."""
+        return _add(name, count, self.artists, self._artist_index)
+
+    def add_venue(self, name: str, count: int = 1) -> str:
+        return _add(name, count, self.venues, self._venue_index)
+
     def save(self, path: Path) -> None:
         payload = {
             "schema": SCHEMA_VERSION,
@@ -146,6 +156,32 @@ def _match(
     if table.get(canonical, 0) >= min_count:
         return canonical
     return None
+
+
+def _add(name: str, count: int, table: dict[str, int], index: dict[str, str]) -> str:
+    """Add *name* to *table* and update *index* in place. Returns the
+    canonical spelling (the most-seen form after the add)."""
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("cannot add empty name to lexicon")
+    key = normalize_name(name)
+    if not key:
+        raise ValueError(f"name normalises to empty: {name!r}")
+    existing = index.get(key)
+    if existing is None:
+        table[name] = table.get(name, 0) + count
+        index[key] = name
+        return name
+    new_total = table.get(existing, 0) + count
+    # When the incoming spelling and the stored one disagree, keep whichever
+    # has the higher total count as canonical.
+    if name != existing and count >= new_total - count:
+        table.pop(existing, None)
+        table[name] = new_total
+        index[key] = name
+        return name
+    table[existing] = new_total
+    return existing
 
 
 def _build_index(table: dict[str, int]) -> dict[str, str]:

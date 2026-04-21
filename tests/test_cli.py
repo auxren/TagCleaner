@@ -237,6 +237,84 @@ class TestTrackTolerance:
         assert "TRACKNUMBER" not in f
 
 
+class TestPromptUnknown:
+    """The --prompt-unknown flag asks the user to fill in missing artists
+    and feeds the answers into the lexicon so later runs don't re-ask."""
+
+    def test_answers_fill_artists_and_feed_lexicon(
+        self, tmp_path: Path, make_concert_tree, monkeypatch,
+    ):
+        # Two date-first folders with no info.txt — parser has no signal
+        # to guess an artist, so both land in the prompt queue.
+        make_concert_tree("1969-12-17 Show A", audio=["01 a.flac"], root=tmp_path)
+        make_concert_tree("1970-01-05 Show B", audio=["01 b.flac"], root=tmp_path)
+
+        # Two concerts live under the same parent (tmp_path), so the prompt
+        # collapses them into one question. The user types "Black Sabbath".
+        answers = iter(["Black Sabbath\n"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(answers).rstrip("\n"))
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+        code = main([str(tmp_path), "--dry-run", "--no-banner", "--yes", "--prompt-unknown"])
+        assert code == 0
+
+        lex_path = tmp_path / "tagcleaner-lexicon.json"
+        assert lex_path.exists()
+        lex = json.loads(lex_path.read_text(encoding="utf-8"))
+        assert lex["artists"]["Black Sabbath"] >= 2
+
+        drafts = json.loads((tmp_path / "tagcleaner-drafts.json").read_text(encoding="utf-8"))
+        assert all(d["artist"] == "Black Sabbath" for d in drafts)
+
+    def test_empty_answer_skips_group(
+        self, tmp_path: Path, make_concert_tree, monkeypatch,
+    ):
+        make_concert_tree("1969-12-17 Show", audio=["01 a.flac"], root=tmp_path)
+        answers = iter(["\n"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(answers).rstrip("\n"))
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+        code = main([str(tmp_path), "--dry-run", "--no-banner", "--yes", "--prompt-unknown"])
+        assert code == 0
+        drafts = json.loads((tmp_path / "tagcleaner-drafts.json").read_text(encoding="utf-8"))
+        assert drafts[0]["artist"] is None
+
+    def test_quit_stops_asking(
+        self, tmp_path: Path, make_concert_tree, monkeypatch,
+    ):
+        # Three no-artist concerts under different parents so they form
+        # three separate prompt groups. 'q' on the first stops the rest.
+        (tmp_path / "a").mkdir()
+        (tmp_path / "b").mkdir()
+        (tmp_path / "c").mkdir()
+        make_concert_tree("1969-12-17 Show", audio=["01 a.flac"], root=tmp_path / "a")
+        make_concert_tree("1970-01-05 Show", audio=["01 b.flac"], root=tmp_path / "b")
+        make_concert_tree("1971-03-12 Show", audio=["01 c.flac"], root=tmp_path / "c")
+        answers = iter(["q\n"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(answers).rstrip("\n"))
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+        code = main([str(tmp_path), "--dry-run", "--no-banner", "--yes", "--prompt-unknown"])
+        assert code == 0
+        # Only the first prompt was shown, then we bailed; nothing got tagged.
+        drafts = json.loads((tmp_path / "tagcleaner-drafts.json").read_text(encoding="utf-8"))
+        assert all(d["artist"] is None for d in drafts)
+
+    def test_not_tty_does_not_prompt(
+        self, tmp_path: Path, make_concert_tree, monkeypatch,
+    ):
+        make_concert_tree("1969-12-17 Show", audio=["01 a.flac"], root=tmp_path)
+
+        def _input_should_not_be_called(_prompt=""):
+            raise AssertionError("input() called when stdin is not a TTY")
+
+        monkeypatch.setattr("builtins.input", _input_should_not_be_called)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+        code = main([str(tmp_path), "--dry-run", "--no-banner", "--yes", "--prompt-unknown"])
+        assert code == 0
+
+
 class TestErrorHandling:
     def test_nonexistent_path(self, tmp_path: Path):
         code = main([str(tmp_path / "does-not-exist"), "--dry-run", "--no-banner", "--yes"])
