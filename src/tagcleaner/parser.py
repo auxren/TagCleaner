@@ -24,6 +24,15 @@ SHORT_DATE = re.compile(r"(?<!\d)(\d{2})[-._](0?[1-9]|1[0-2])[-._](0?[1-9]|[12]\
 COMPACT_DATE = re.compile(r"(?<!\d)(19|20)(\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?!\d)")
 # 'YYYY.MMDD' or 'YYYY_MMDD' (seen in filenames like SRV_1985.0725)
 SPLIT_COMPACT = re.compile(r"(?<!\d)(19|20)(\d{2})[._](0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?!\d)")
+# US-style MM/DD/YYYY with full 4-digit year ('02/19/2010', '11.10.2023')
+US_FULL_DATE = re.compile(
+    r"(?<!\d)(0?[1-9]|1[0-2])[-._/](0?[1-9]|[12]\d|3[01])[-._/]((?:19|20)\d{2})(?!\d)"
+)
+# US-style MM_DD_YY with 2-digit year ('11_10_23', '09-01-89'). Year ≥ 60 is
+# interpreted as 19xx, otherwise 20xx — matches the etree/archive convention.
+US_SHORT_DATE = re.compile(
+    r"(?<!\d)(0?[1-9]|1[0-2])[-._/](0?[1-9]|[12]\d|3[01])[-._/](\d{2})(?!\d)"
+)
 PROSE_DATE = re.compile(
     r"\b(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+)?"
     r"(\d{1,2})(?:st|nd|rd|th)?\s+"
@@ -35,6 +44,9 @@ MONTH_DAY_YEAR = re.compile(
     r"(\d{1,2})(?:st|nd|rd|th)?[,\s]+(\d{4})",
     re.I,
 )
+# Bare year (used only as an artist/date boundary in folder names, never as a
+# full parsed date — "1985" alone gives you a year, not a calendar date).
+YEAR_ONLY = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
 
 # Artist-abbreviation prefixes used in etree-style filenames like `gd67-08-05`.
 # Baseline is the community list at https://wiki.etree.org/index.php?page=BandAbbreviations
@@ -173,7 +185,6 @@ def parse_date(text: str) -> str | None:
     m = ISO_DATE.search(text)
     if m:
         try:
-            y = int(m.group(1) + text[m.start() + 2: m.start() + 4])
             y = int(text[m.start(): m.start() + 4])
             mo = int(m.group(2))
             d = int(m.group(3))
@@ -190,11 +201,30 @@ def parse_date(text: str) -> str | None:
                 return _date(y, mo, d).strftime("%Y-%m-%d")
             except (ValueError, OverflowError):
                 pass
+    m = US_FULL_DATE.search(text)
+    if m:
+        try:
+            mo = int(m.group(1))
+            d = int(m.group(2))
+            y = int(m.group(3))
+            return _date(y, mo, d).strftime("%Y-%m-%d")
+        except (ValueError, OverflowError):
+            pass
     m = PROSE_DATE.search(text) or MONTH_DAY_YEAR.search(text)
     if m:
         try:
             dt = dateparser.parse(m.group(0), fuzzy=True)
             return dt.strftime("%Y-%m-%d")
+        except (ValueError, OverflowError):
+            pass
+    m = US_SHORT_DATE.search(text)
+    if m:
+        try:
+            mo = int(m.group(1))
+            d = int(m.group(2))
+            yy = int(m.group(3))
+            year = 1900 + yy if yy >= 60 else 2000 + yy
+            return _date(year, mo, d).strftime("%Y-%m-%d")
         except (ValueError, OverflowError):
             pass
     m = SHORT_DATE.search(text)
@@ -217,19 +247,62 @@ def _expand_artist_prefix(folder_name: str) -> str | None:
     return ARTIST_PREFIX_MAP.get(m.group(1))
 
 
+_DATE_FINDERS = (
+    ISO_DATE, COMPACT_DATE, SPLIT_COMPACT,
+    US_FULL_DATE, US_SHORT_DATE, SHORT_DATE,
+    PROSE_DATE, MONTH_DAY_YEAR,
+)
+
+
+def _first_date_position(text: str) -> int | None:
+    """Position of the first date-like or year-only substring in *text*.
+
+    Returns the earliest match across every supported date format, falling
+    back to a bare four-digit year. Used by folder-name parsing to locate the
+    artist/date boundary without being picky about which format is in play.
+    """
+    best: int | None = None
+    for pat in _DATE_FINDERS:
+        m = pat.search(text)
+        if m is not None and (best is None or m.start() < best):
+            best = m.start()
+    m = YEAR_ONLY.search(text)
+    if m is not None and (best is None or m.start() < best):
+        best = m.start()
+    return best
+
+
+def _clean_artist_candidate(text: str) -> str | None:
+    """Normalise a raw 'everything before the date' string into an artist.
+
+    Strips leading/trailing separator junk, splits at the first ` - ` or
+    ` (`, and returns the first chunk if it looks plausibly like a band name.
+    """
+    t = text.strip(" -,_()[]\t")
+    # Cut at the first ' - ' or ' (' so compound prefixes like
+    # "Steel Pulse - The Palace, Hollywood" reduce to just "Steel Pulse".
+    t = re.split(r"\s+-\s+|\s+\(", t, maxsplit=1)[0]
+    t = t.strip(" -,_()[]\t")
+    if not t or not any(ch.isalpha() for ch in t):
+        return None
+    if len(t) < 2 or len(t) > 60:
+        return None
+    return t
+
+
 def guess_artist_from_folder(folder_name: str) -> str | None:
     art = _expand_artist_prefix(folder_name)
     if art:
         return art
-    # "Artist YYYY-MM-DD ..." or "Artist - YYYY-MM-DD ..."
-    m = re.match(r"^([A-Za-z][A-Za-z0-9&'. ]+?)\s+[-,(]?\s*(?:19|20)\d{2}", folder_name)
-    if m:
-        return m.group(1).strip(" -,")
-    # "YYYY-MM-DD - Artist - Venue"
+    # "YYYY-MM-DD - Artist - Venue" style: artist lives between the date and
+    # the venue separator.
     m = re.match(r"^(?:19|20)\d{2}[-.]\d{2}[-.]\d{2}\s*-\s*([^-]+?)\s*-", folder_name)
     if m:
         return m.group(1).strip()
-    return None
+    pos = _first_date_position(folder_name)
+    if pos is None or pos == 0:
+        return None
+    return _clean_artist_candidate(folder_name[:pos])
 
 
 def _disc_from_marker(line: str) -> int | None:
@@ -416,6 +489,11 @@ def parse_info_txt(body: str) -> dict:
             continue
         if DISC_MARKER.search(ln):
             break
+        # Reject setlist entries like "01. Steel Pulse - intro" — those slip
+        # past _looks_like_venue (they have uppercase, no source code, etc.)
+        # and then get promoted to venue simply because they come first.
+        if TRACK_LINE.match(ln):
+            continue
         if "venue" not in data or "city" not in data:
             v, c, r = _split_venue_city_region(ln)
             if v and c and _looks_like_venue(v):
@@ -444,6 +522,32 @@ _NOISE_FIRST_LINE = re.compile(
     r"tracklist|setlist|recording\s+info|lineage|source|notes?|file\s*info|"
     r"audiochecker|shntool|sbe(?:ok)?|ffp|checksum)",
     re.I,
+)
+
+# Descriptive-sentence openers that almost always introduce a note or
+# comment about the recording, not the artist name. "This is an incredible
+# show…", "Recorded from the soundboard…", "Taped by…", etc.
+_SENTENCE_OPENER = re.compile(
+    r"^(?:this\s+(?:is|was|recording|show|tape)|these\s+are|"
+    r"recorded|taped|taping|transferred|transfer\s+from|mastered|"
+    r"dedicated|thanks|thank\s+you|please|note|the\s+following|"
+    r"here\s+(?:is|are)|my\s+(?:cassette|tape|copy)|"
+    r"(?:all|most)\s+(?:song|track)s?)\b",
+    re.I,
+)
+
+# Source / lineage codes that, when present in a line, signal it's taper
+# metadata rather than an artist name. Matches 'SBD', 'SBD4', 'AUD2', 'DAT',
+# 'FM', 'MTX', 'MATRIX' as whole tokens (with optional trailing digits).
+_SOURCE_CODE_TOKEN = re.compile(
+    r"\b(?:SBD|AUD|DAT|MTX|MATRIX|DAUD|ALD|FOB|ROIO|FLAC|SHN)\d*\b",
+    re.I,
+)
+
+# Any 2+ dot/dash/slash-separated numeric run — catches dates that
+# parse_date misses because of surrounding noise ('8-21-87', '10/9/09').
+_EMBEDDED_DATE_SHAPE = re.compile(
+    r"\b\d{1,4}[-._/]\d{1,2}[-._/]\d{1,4}\b"
 )
 
 # Words that strongly suggest the line is a venue, not an artist. Used to stop
@@ -511,6 +615,16 @@ def _first_artist_line(nonblank: list[str]) -> str | None:
             continue
         letters = sum(ch.isalpha() for ch in stripped)
         if letters < 2 or len(stripped) > 100:
+            continue
+        # Reject descriptive sentences ("This is an incredible show...") and
+        # taper-metadata lines ("Steel Pulse - Sunsplash - JA 8-21-87 SBD4").
+        # These slip past _NOISE_FIRST_LINE because they start with an
+        # arbitrary word but are never an artist name.
+        if _SENTENCE_OPENER.match(stripped):
+            continue
+        if _SOURCE_CODE_TOKEN.search(stripped):
+            continue
+        if _EMBEDDED_DATE_SHAPE.search(stripped):
             continue
         if _VENUE_KEYWORDS.search(stripped):
             continue

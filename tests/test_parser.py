@@ -34,6 +34,13 @@ class TestParseDate:
             ("22nd Aug 1987", "1987-08-22"),
             ("22 August 1987", "1987-08-22"),
             ("84-09-21", "1984-09-21"),
+            # US-style MM/DD/YY with 2-digit year (year<60 → 20xx, else 19xx).
+            ("11_10_23 Chicago", "2023-11-10"),
+            ("09_01_89 Merriweather", "1989-09-01"),
+            ("03-28-13", "2013-03-28"),
+            # US-style MM/DD/YYYY with full year.
+            ("02/19/2010 - Friday", "2010-02-19"),
+            ("11.10.2023", "2023-11-10"),
         ],
     )
     def test_recognized_formats(self, text: str, expected: str):
@@ -55,6 +62,20 @@ class TestGuessArtist:
             ("srv1985-07-25", "Stevie Ray Vaughan"),
             ("Talking Heads 1980-08-27 Wollman Rink", "Talking Heads"),
             ("Grateful Dead - 1987-08-22 - Calaveras", "Grateful Dead"),
+            # Folder uses underscore-separated 2-digit-year dates — the
+            # single most common case we'd been missing entirely.
+            ("My Morning Jacket - 11_10_23 Live from The Chicago Theatre, Chicago, IL",
+             "My Morning Jacket"),
+            ("Jerry Garcia Band - 09_01_89 Merriweather Post Pavilion, Columbia, MD",
+             "Jerry Garcia Band"),
+            ("Widespread Panic - 06_25_16 Red Rocks", "Widespread Panic"),
+            # No space before the dash (seen with CRB etc.).
+            ("CRB- 2012-08-24 Bearsville Theatre, Woodstock, NY", "CRB"),
+            # Year-only boundary: the artist is whatever's before ' - '.
+            ("Steel Pulse - The Palace,Hollywood, CA 1985 SBD quest Stevie Wonder (Upgrade)",
+             "Steel Pulse"),
+            # Prose-date boundary: take the prefix up to the first ' - '.
+            ("Steel Pulse - Sunsplash - JA Aug. 21st 1987  SBD4", "Steel Pulse"),
         ],
     )
     def test_known_patterns(self, folder: str, expected: str):
@@ -62,6 +83,15 @@ class TestGuessArtist:
 
     def test_unknown_prefix_returns_none(self):
         assert guess_artist_from_folder("xyz_unparseable") is None
+
+    @pytest.mark.parametrize("folder", [
+        # No alphabetic content before the date.
+        "2007 10 12 I Camden NJ",
+        # Pure date folder.
+        "1984-09-21",
+    ])
+    def test_dateless_prefixes_return_none(self, folder: str):
+        assert guess_artist_from_folder(folder) is None
 
 
 class TestSetlistParser:
@@ -178,6 +208,43 @@ class TestParseInfoTxt:
         out = parse_info_txt(body)
         assert out["artist"] == "Grateful Dead"
         assert out.get("city") == "Oakland"
+
+    def test_descriptive_sentence_rejected_as_artist(self):
+        # Real-world header from a Steel Pulse folder. The banner line is
+        # rejected (Palace is a venue keyword), the next line looks clean
+        # enough to a naive filter but is clearly a description sentence.
+        body = (
+            "********** Steel Pulse - The Palace ************\n"
+            "This is an incredible show with special guest Stevie Wonder.\n"
+            "01. reggae fever\n"
+        )
+        out = parse_info_txt(body)
+        assert out.get("artist") != \
+            "This is an incredible show with special guest Stevie Wonder."
+
+    def test_line_with_embedded_date_rejected_as_artist(self):
+        # "Artist - Date - Source" slug from a taper's first line. The date
+        # (8-21-87) and the source code (SBD4) each independently disqualify
+        # it from being used as an artist.
+        body = (
+            "Steel Pulse - Sunsplash - JA 8-21-87 SBD4\n"
+            "01. Steel Pulse - Sunsplash - t. cownan intro\n"
+        )
+        out = parse_info_txt(body)
+        assert "Steel Pulse - Sunsplash - JA 8-21-87 SBD4" != out.get("artist")
+
+    def test_track_line_not_promoted_to_venue(self):
+        # Info.txt that's essentially just the setlist, no venue present:
+        # the first track line used to be picked up as the venue.
+        body = (
+            "Some Band\n"
+            "1999-06-15\n"
+            "01. Opener Song\n"
+            "02. Middle Tune\n"
+            "03. Closer\n"
+        )
+        out = parse_info_txt(body)
+        assert not out.get("venue", "").startswith("01.")
 
 
 class TestReadInfoTxt:
