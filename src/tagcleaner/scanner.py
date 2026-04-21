@@ -28,27 +28,43 @@ from .models import Concert
 AUDIO_EXTS = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav"}
 FINGERPRINT_EXT_HINTS = ("ffp", "md5", "sha", "shntool", "audiochecker", "sbeok")
 
-# Folder-name-only disc marker: matches 'Disc 1', 'CD 2', 'cd2', 'd1',
-# 'disc_02', 'Disc One', 'Set 1', 'Encore', 'Early Show', etc. The trailing
-# ``\s*$`` anchor is what makes this safe -- 'Disc 2' matches but
-# '1984-09-21 Disc 2' does not, because the whole name must be the marker.
-DISC_FOLDER_RE = re.compile(
-    r"^\s*"
-    r"(?:"
-    r"(?:disc|disk|cd|d)\s*[_-]?\s*\d{1,2}"
-    r"|(?:disc|disk|cd)\s*[_-]?\s*(?:one|two|three|four|five|six|seven|eight)"
-    r"|set\s*[_-]?\s*(?:\d{1,2}|one|two|three|four|five|i{1,3}|iv|v)"
-    r"|encore|early\s*show|late\s*show|matinee(?:\s+show)?|evening(?:\s+show)?"
-    r")"
-    r"\s*$",
-    re.I,
+# Disc-marker grammar shared by DISC_FOLDER_RE (whole-name) and
+# _DISC_TOKEN_RE (anywhere-in-name). Covers: 'Disc 1', 'CD 2', 'cd2', 'd1',
+# 'disc_02', 'Disc One', 'DVD 1', 'Set 1', 'Set II', '1st Set', 'first set',
+# 'Volume 4', 'Vol 2', 'Encore', 'Intermission Set', 'Early Show'.
+_DISC_TOKEN_BODY = r"""
+(?:
+    \b(?:disc|disk|dvd|cd)\s*[_.\-]?\s*
+        (\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\b
+  | (?:^|(?<=[\s_\-]))d\s*(\d{1,2})\b
+  | \bset\s*[_.\-]?\s*
+        (\d{1,2}|i{1,3}|iv|v|one|two|three|four|five)\b
+  | \b(\d+)(?:st|nd|rd|th)\s+set\b
+  | \b(first|second|third|fourth|fifth|sixth|seventh|eighth)\s+set\b
+  | \bvol(?:ume)?\s*[_.\-]?\s*
+        (\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\b
+  | \b(encore|intermission(?:\s+set)?
+       |matinee(?:\s+show)?|early\s+show|late\s+show|evening(?:\s+show)?)\b
 )
+"""
+
+# Anywhere-in-name marker: matches 'Disc 1' inside 'WHEN WE WERE KINGS [Disc 1]'
+# or '16Bit (Disc.2)'. Used by _parse_disc_marker to extract the base text
+# outside the marker for shared-prefix multi-disc detection.
+_DISC_TOKEN_RE = re.compile(_DISC_TOKEN_BODY, re.I | re.VERBOSE)
+
+# Whole-name disc marker: 'Disc 2' matches, '1984-09-21 Disc 2' does not.
+# Kept as a public helper for callers that need a strict yes/no on the name
+# alone.
+DISC_FOLDER_RE = re.compile(r"^\s*" + _DISC_TOKEN_BODY + r"\s*$", re.I | re.VERBOSE)
 
 # Names that are clearly format-bucket wrappers, not real concert folders.
-# Used to collapse parent/{FLAC,MP3,...}/audio.flac into the parent.
+# Used to collapse parent/{FLAC,MP3,CD,...}/audio.flac into the parent.
 _FORMAT_WRAPPER_NAMES = frozenset({
     "flac", "flac16", "flac24", "flac1644", "flac2448",
-    "mp3", "wav", "shn", "shnf", "audio", "files", "music", "tracks",
+    "mp3", "wav", "shn", "shnf",
+    "audio", "files", "music", "tracks", "songs",
+    "cd", "single cd", "compact disc",
 })
 
 # Trailing disc-index suffix used by _shared_prefix_disc_set to recognise
@@ -58,22 +74,73 @@ _PREFIX_DISC_SUFFIX_RE = re.compile(
     re.I,
 )
 
-# Map a disc-folder name to an integer for ordering. "Disc 10" must sort after
-# "Disc 2", which string sort gets wrong. Returns ``None`` for non-numeric
-# markers (Encore, Early Show) so they sort last by name.
+# Word/ordinal/roman-numeral form of a disc index, mapped to its integer.
+_DISC_WORD_NUM = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8,
+    "i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5,
+}
+
+# Non-numeric set markers ordered relative to numbered discs.
+_LATE_MARKER_NUM = {
+    "encore": 99, "intermission": 99, "intermission set": 99,
+    "late show": 99, "evening": 99, "evening show": 99,
+    "matinee": 0, "matinee show": 0, "early show": 0,
+}
+
 _DISC_NUM_RE = re.compile(r"(\d{1,2})")
-_DISC_WORD = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8}
+
+
+def _parse_disc_marker(name: str) -> tuple[str, int] | None:
+    """Find the first disc marker in *name* and return ``(base, idx)``.
+
+    *base* is the rest of the name after the marker (and any wrapping
+    brackets/parens/dots) is stripped, lowercased and whitespace-collapsed.
+    *idx* is an integer suitable for sorting (encore/intermission → 99,
+    matinee/early show → 0). Returns ``None`` when no marker is found.
+
+    Examples
+    --------
+    >>> _parse_disc_marker("Disc 1")
+    ('', 1)
+    >>> _parse_disc_marker("WHEN WE WERE KINGS [Disc 2]")
+    ('when we were kings', 2)
+    >>> _parse_disc_marker("Hello Old Friend, Van (Disc 1)")
+    ("hello old friend, van", 1)
+    >>> _parse_disc_marker("Volume 4")
+    ('', 4)
+    >>> _parse_disc_marker("1st Set")
+    ('', 1)
+    """
+    m = _DISC_TOKEN_RE.search(name)
+    if m is None:
+        return None
+    raw = next((g for g in m.groups() if g is not None), "")
+    raw_low = raw.lower().strip()
+    if raw_low.isdigit():
+        idx = int(raw_low)
+    elif raw_low in _DISC_WORD_NUM:
+        idx = _DISC_WORD_NUM[raw_low]
+    elif raw_low in _LATE_MARKER_NUM:
+        idx = _LATE_MARKER_NUM[raw_low]
+    else:
+        idx = 99
+    base_raw = name[: m.start()] + name[m.end() :]
+    base = re.sub(r"[\[\](){}]", " ", base_raw)
+    base = re.sub(r"[\s_\-.]+", " ", base).strip().lower()
+    return base, idx
 
 
 def _disc_sort_key(name: str) -> tuple[int, str]:
+    parsed = _parse_disc_marker(name)
+    if parsed is not None:
+        return (parsed[1], name.lower())
     low = name.lower()
     m = _DISC_NUM_RE.search(low)
     if m:
         return (int(m.group(1)), low)
-    for word, n in _DISC_WORD.items():
-        if word in low:
-            return (n, low)
-    # Encore / late show / etc. -- push to the end but keep name-order stable.
     return (999, low)
 
 
@@ -148,17 +215,24 @@ def _is_multi_disc_parent(parent: Path, subdirs: list[Path]) -> bool:
     """True when *subdirs* hold a single multi-disc concert.
 
     The parent qualifies when 2+ audio-bearing children are all disc-shaped.
-    "Disc-shaped" means either matching :data:`DISC_FOLDER_RE` (Disc 1, CD 2,
-    Encore, Set 1) OR sharing a common prefix that differs only by a trailing
-    disc index (BOOKER T 1 / BOOKER T 2, bare 1 / 2). Non-audio peers
-    (Artwork, Scans) are tolerated and ignored. Any audio-bearing peer that
-    is *not* disc-shaped disqualifies the rollup so standalone shows
-    accidentally placed alongside discs aren't hidden.
+    Two strategies are tried, in order:
 
-    The shared-prefix branch additionally requires the parent to look like a
-    concert (date in name or info.txt present), since otherwise sibling
-    artist folders ``show1``/``show2``/``show3`` at a library root would
-    collapse into a single bogus rollup."""
+    * **Strict marker** — every name contains a recognised disc keyword
+      (Disc, CD, DVD, Set, Vol, 1st Set, Encore, ...). The text *outside*
+      the marker (its "base") must be the same for every child, and the
+      marker indices must be unique. This catches bracketed forms like
+      ``WHEN WE WERE KINGS [Disc 1]`` / ``[Disc 2]`` and trailing-format
+      forms like ``Disc 1 Flac`` / ``Disc 2 Flac``.
+    * **Loose shared prefix** — names share a common prefix that differs only
+      by a trailing index (BOOKER T 1 / 2, bare 1 / 2). This branch
+      additionally requires the parent to look like a concert (date in name
+      or info.txt present), so sibling artist folders
+      ``show1``/``show2``/``show3`` at a library root don't false-collapse.
+
+    Non-audio peers (Artwork, Scans) are tolerated and ignored. Any
+    audio-bearing peer that is *not* disc-shaped disqualifies the rollup so
+    standalone shows accidentally placed alongside discs aren't hidden.
+    """
     audio_subs: list[Path] = []
     parent_classified = _classify(parent)
     parent_info = bool(parent_classified and parent_classified[1])
@@ -168,11 +242,15 @@ def _is_multi_disc_parent(parent: Path, subdirs: list[Path]) -> bool:
             audio_subs.append(sub)
     if len(audio_subs) < 2:
         return False
-    if all(DISC_FOLDER_RE.match(s.name) for s in audio_subs):
-        return True
-    if not _shared_prefix_disc_set(audio_subs):
-        return False
-    return parent_info or _name_has_date(parent.name)
+    sigs = [_parse_disc_marker(s.name.strip()) for s in audio_subs]
+    if all(sig is not None for sig in sigs):
+        bases = {sig[0] for sig in sigs}
+        indices = [sig[1] for sig in sigs]
+        if len(bases) == 1 and len(set(indices)) == len(indices):
+            return True
+    if _shared_prefix_disc_set(audio_subs):
+        return parent_info or _name_has_date(parent.name)
+    return False
 
 
 def _name_has_date(name: str) -> bool:

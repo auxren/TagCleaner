@@ -11,6 +11,7 @@ from tagcleaner.scanner import (
     _enumerate_folder,
     _fingerprint,
     _is_multi_disc_parent,
+    _parse_disc_marker,
     list_candidate_dirs,
     scan,
 )
@@ -241,11 +242,15 @@ class TestMultiDiscSubfolders:
     with the audio and every disc came out at confidence 0.00."""
 
     @pytest.mark.parametrize("name", [
-        "Disc 1", "Disc 2", "Disc 10", "disc 1", "disc1", "disc_01",
+        "Disc 1", "Disc 2", "Disc 10", "disc 1", "disc1", "disc_01", "Disc.1",
         "CD 1", "CD 2", "cd2", "CD1", "cd_02",
+        "DVD 1", "DVD2",
         "d1", "d2", "D01",
         "Disc One", "Disc Two", "Disc Three",
         "Set 1", "Set 2", "Set II", "set 1",
+        "1st Set", "2nd Set", "3rd Set", "first set", "second set",
+        "intermission", "intermission set",
+        "Volume 1", "Volume 10", "Vol 2", "vol_3",
         "Encore", "encore", "Early Show", "Late Show", "Matinee",
     ])
     def test_disc_folder_re_matches(self, name):
@@ -257,9 +262,55 @@ class TestMultiDiscSubfolders:
         "show",
         "disk1.5",             # not a clean integer
         "dataset",             # starts with 'd' but not 'd<digits>'
+        "WHEN WE WERE KINGS [Disc 1]",  # bracketed — matched via _parse_disc_marker, not DISC_FOLDER_RE
     ])
     def test_disc_folder_re_rejects(self, name):
         assert not DISC_FOLDER_RE.match(name), name
+
+    @pytest.mark.parametrize("name,base,idx", [
+        ("Disc 1", "", 1),
+        ("Disc 10", "", 10),
+        ("disc_02", "", 2),
+        ("Disc.1", "", 1),
+        ("CD2", "", 2),
+        ("DVD 3", "", 3),
+        ("D1", "", 1),
+        ("Disc One", "", 1),
+        ("Set II", "", 2),
+        ("1st Set", "", 1),
+        ("first set", "", 1),
+        ("Volume 4", "", 4),
+        ("Vol 2", "", 2),
+        ("Encore", "", 99),
+        ("intermission set", "", 99),
+        # bracketed / parenthesised disc markers
+        ("[Disc 1]", "", 1),
+        ("(Disc 2)", "", 2),
+        ("(Disc.1)", "", 1),
+        ("WHEN WE WERE KINGS [Disc 1]", "when we were kings", 1),
+        ("DESTROYER (SODD) [Disc 1]", "destroyer sodd", 1),
+        ("Hello Old Friend, Van (Disc 1)", "hello old friend, van", 1),
+        ("16Bit (Disc.2)", "16bit", 2),
+        # trailing format / qualifier
+        ("Disc 1 Flac", "flac", 1),
+        ("CD1 new", "new", 1),
+        # trailing -D<n> suffix
+        ("Dominion Theatre-London 2014-D1", "dominion theatre london 2014", 1),
+    ])
+    def test_parse_disc_marker(self, name, base, idx):
+        parsed = _parse_disc_marker(name)
+        assert parsed is not None, name
+        assert parsed == (base, idx), name
+
+    @pytest.mark.parametrize("name", [
+        "BOOKER T 1",       # no keyword — shared-prefix path, not strict
+        "rush1984-09-21",
+        "show",
+        "Outtakes",
+        "1",                # bare digit — handled by shared-prefix path only
+    ])
+    def test_parse_disc_marker_none(self, name):
+        assert _parse_disc_marker(name) is None, name
 
     def test_is_multi_disc_parent(self, tmp_path: Path, make_flac):
         parent = tmp_path / "show"
@@ -441,6 +492,72 @@ class TestMultiDiscSubfolders:
         (parent / "Scans").mkdir()  # no audio inside
         out = list_candidate_dirs(tmp_path)
         assert [p.name for p, _ in out] == ["show"]
+
+    @pytest.mark.parametrize("disc_names", [
+        ("[Disc 1]", "[Disc 2]"),
+        ("(Disc 1)", "(Disc 2)"),
+        ("(Disc.1)", "(Disc.2)"),
+        ("WHEN WE WERE KINGS [Disc 1]", "WHEN WE WERE KINGS [Disc 2]"),
+        ("DESTROYER (SODD) [Disc 1]", "DESTROYER (SODD) [Disc 2]"),
+        ("Hello Old Friend, Van (Disc 1)", "Hello Old Friend, Van (Disc 2)"),
+        ("16Bit (Disc.1)", "16Bit (Disc.2)"),
+        ("Disc 1 Flac", "Disc 2 Flac"),
+        ("CD1 new", "CD2 new"),
+        ("Volume 1", "Volume 2"),
+        ("Vol 1", "Vol 2"),
+        ("1st Set", "2nd Set"),
+        ("first set", "second set"),
+        ("Dominion Theatre-London 2014-D1", "Dominion Theatre-London 2014-D2"),
+    ])
+    def test_bracket_and_suffix_variants_roll_up(
+        self, tmp_path: Path, make_flac, disc_names,
+    ):
+        parent = tmp_path / "show"
+        for d in disc_names:
+            (parent / d).mkdir(parents=True)
+            make_flac(parent / d / "01.flac")
+        out = list_candidate_dirs(tmp_path)
+        assert [p.name for p, _ in out] == ["show"], disc_names
+
+    def test_mismatched_bracket_prefixes_do_not_roll_up(
+        self, tmp_path: Path, make_flac,
+    ):
+        # Two different shows with disc markers must NOT collapse into one —
+        # the text outside the marker (the "base") has to match.
+        parent = tmp_path / "box"
+        for d in ("Berlin 1976 [Disc 1]", "Tokyo 1977 [Disc 1]"):
+            (parent / d).mkdir(parents=True)
+            make_flac(parent / d / "01.flac")
+        out = sorted(p.name for p, _ in list_candidate_dirs(tmp_path))
+        assert out == ["Berlin 1976 [Disc 1]", "Tokyo 1977 [Disc 1]"]
+
+    def test_single_cd_wrapper_collapses_to_parent(self, tmp_path: Path, make_flac):
+        parent = tmp_path / "Zeppelin 1975-03-12"
+        inner = parent / "Single CD"
+        inner.mkdir(parents=True)
+        make_flac(inner / "01.flac")
+        out = list_candidate_dirs(tmp_path)
+        assert [p.name for p, _ in out] == ["Zeppelin 1975-03-12"]
+
+    def test_cd_wrapper_collapses_to_parent(self, tmp_path: Path, make_flac):
+        parent = tmp_path / "Zeppelin 1975-03-12"
+        inner = parent / "CD"
+        inner.mkdir(parents=True)
+        make_flac(inner / "01.flac")
+        out = list_candidate_dirs(tmp_path)
+        assert [p.name for p, _ in out] == ["Zeppelin 1975-03-12"]
+
+    def test_volume_series_ordering(self, tmp_path: Path, make_flac):
+        # Volume 1..Volume 10 should be aggregated in numeric order.
+        parent = tmp_path / "boxset"
+        for n in (1, 2, 10):
+            (parent / f"Volume {n}").mkdir(parents=True)
+            make_flac(parent / f"Volume {n}" / "01.flac")
+        enum = _enumerate_folder(parent)
+        assert enum is not None
+        _, audio, _, _ = enum
+        order = [p.parent.name for p in audio]
+        assert order == ["Volume 1", "Volume 2", "Volume 10"]
 
 
 class TestFingerprint:
