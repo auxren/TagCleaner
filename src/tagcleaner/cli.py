@@ -301,6 +301,8 @@ def _apply(
     failures = 0
     skipped = 0
     applied = 0
+    album_only = 0
+    unchanged = 0
     verb = "tagged" if mode is Mode.IN_PLACE else "copied"
     copy_to_str = str(args.copy_to.resolve()) if args.copy_to else None
     for c in concerts:
@@ -360,16 +362,36 @@ def _apply(
         results = apply_plans(plans, mode)
         folder_fails = 0
         folder_ok = 0
+        folder_album_only = 0
+        folder_unchanged = 0
         for r in results:
             if not r.ok:
                 failures += 1
                 folder_fails += 1
                 console.print(f"    [bold red]❌ FAIL[/] {r.plan.file.name}: {r.error}")
-            else:
-                applied += 1
-                folder_ok += 1
+                continue
+            applied += 1
+            folder_ok += 1
+            if r.album_only:
+                if r.changed:
+                    album_only += 1
+                    folder_album_only += 1
+                else:
+                    unchanged += 1
+                    folder_unchanged += 1
         if folder_fails == 0 and results:
-            console.print(f"  [green]✅ {verb}[/] [bold]{c.folder.name}[/] [dim]({len(results)} tracks)[/]")
+            if folder_unchanged == len(results):
+                console.print(
+                    f"  [bright_black]✓ unchanged[/] [bold]{c.folder.name}[/] "
+                    f"[dim](already tagged)[/]"
+                )
+            elif folder_album_only + folder_unchanged == len(results):
+                console.print(
+                    f"  [cyan]📀 album only[/] [bold]{c.folder.name}[/] "
+                    f"[dim]({folder_album_only} updated)[/]"
+                )
+            else:
+                console.print(f"  [green]✅ {verb}[/] [bold]{c.folder.name}[/] [dim]({len(results)} tracks)[/]")
         if history is not None and results:
             history.record_tagging(
                 c.folder,
@@ -384,6 +406,8 @@ def _apply(
     console.print(
         f"\n[bold bright_white]🎉 Done.[/] "
         f"[green]applied[/]={applied}  "
+        f"[cyan]album-only[/]={album_only}  "
+        f"[bright_black]unchanged[/]={unchanged}  "
         f"[yellow]skipped[/]={skipped}  "
         f"[red]failed[/]={failures}  "
         f"[cyan]mode[/]={mode.value}"

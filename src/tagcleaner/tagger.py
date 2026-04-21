@@ -39,6 +39,8 @@ class TagResult:
     plan: TagPlan
     ok: bool
     error: str | None = None
+    changed: bool = True       # False when the file was already fully tagged
+    album_only: bool = False   # True when only ALBUM was rewritten
 
 
 def build_plans(
@@ -107,17 +109,84 @@ def apply_plans(plans: list[TagPlan], mode: Mode) -> list[TagResult]:
                 plan.dest.parent.mkdir(parents=True, exist_ok=True)
                 if not plan.dest.exists() or plan.dest.stat().st_size != plan.file.stat().st_size:
                     shutil.copy2(plan.file, plan.dest)
-            _write_tags(plan)
-            results.append(TagResult(plan=plan, ok=True))
+            changed, album_only = _write_tags(plan)
+            results.append(TagResult(
+                plan=plan, ok=True, changed=changed, album_only=album_only,
+            ))
         except Exception as exc:  # noqa: BLE001 - we want to report every failure
             results.append(TagResult(plan=plan, ok=False, error=f"{type(exc).__name__}: {exc}"))
     return results
 
 
-def _write_tags(plan: TagPlan) -> None:
+def _tag_present(tags, key: str) -> bool:
+    """True when *tags* has a non-blank value for *key* (case-insensitive
+    for the EasyID3 dict which normalises to lowercase)."""
+    val = tags.get(key)
+    if val is None:
+        return False
+    if isinstance(val, list):
+        val = val[0] if val else ""
+    return bool(str(val).strip())
+
+
+def _is_already_tagged(plan: TagPlan, tags) -> bool:
+    """True when every field this plan would write (other than ALBUM) is
+    already non-blank on the file.
+
+    ``tags`` can be any mutagen-style dict (FLAC or EasyID3). ALBUM is
+    intentionally excluded — we always want to rewrite it to our
+    canonical ``YYYY-MM-DD Venue, City [source]`` format.
+    """
+    if not _tag_present(tags, "ARTIST") and not _tag_present(tags, "artist"):
+        return False
+    if plan.date and not (_tag_present(tags, "DATE") or _tag_present(tags, "date")):
+        return False
+    if plan.track is not None and not (
+        _tag_present(tags, "TRACKNUMBER") or _tag_present(tags, "tracknumber")
+    ):
+        return False
+    if plan.title is not None and not (
+        _tag_present(tags, "TITLE") or _tag_present(tags, "title")
+    ):
+        return False
+    if plan.disc is not None and plan.disc_total is not None and not (
+        _tag_present(tags, "DISCNUMBER") or _tag_present(tags, "discnumber")
+    ):
+        return False
+    return True
+
+
+def _existing_album(tags) -> str:
+    for key in ("ALBUM", "album"):
+        val = tags.get(key)
+        if val is None:
+            continue
+        if isinstance(val, list):
+            val = val[0] if val else ""
+        return str(val)
+    return ""
+
+
+def _write_tags(plan: TagPlan) -> tuple[bool, bool]:
+    """Apply *plan* to the destination file.
+
+    Returns ``(changed, album_only)``:
+    * ``changed`` — whether the file was actually saved.
+    * ``album_only`` — True when every plan field except ALBUM was already
+      populated, so we only rewrote ALBUM to match the canonical format.
+
+    When the file is already fully tagged AND its ALBUM already equals
+    our planned album, the file is left untouched.
+    """
     ext = plan.dest.suffix.lower()
     if ext == ".flac":
         audio = FLAC(str(plan.dest))
+        if _is_already_tagged(plan, audio):
+            if _existing_album(audio) == plan.album:
+                return False, True
+            audio["ALBUM"] = plan.album
+            audio.save()
+            return True, True
         audio["ARTIST"] = plan.artist
         audio["ALBUMARTIST"] = plan.artist
         audio["ALBUM"] = plan.album
@@ -137,7 +206,7 @@ def _write_tags(plan: TagPlan) -> None:
                 if k in audio:
                     del audio[k]
         audio.save()
-        return
+        return True, False
     if ext == ".mp3":
         try:
             audio = EasyID3(str(plan.dest))
@@ -146,6 +215,12 @@ def _write_tags(plan: TagPlan) -> None:
             mp3.add_tags()
             mp3.save()
             audio = EasyID3(str(plan.dest))
+        if _is_already_tagged(plan, audio):
+            if _existing_album(audio) == plan.album:
+                return False, True
+            audio["album"] = plan.album
+            audio.save()
+            return True, True
         audio["artist"] = plan.artist
         audio["albumartist"] = plan.artist
         audio["album"] = plan.album
@@ -158,5 +233,5 @@ def _write_tags(plan: TagPlan) -> None:
         if plan.disc is not None and plan.disc_total is not None:
             audio["discnumber"] = f"{plan.disc}/{plan.disc_total}"
         audio.save()
-        return
+        return True, False
     raise RuntimeError(f"unsupported audio format: {ext}")

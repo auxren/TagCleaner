@@ -200,3 +200,131 @@ class TestApplyPlansError:
         results = apply_plans([plan], Mode.IN_PLACE)
         assert results[0].ok is False
         assert results[0].error
+
+
+class TestAlreadyTaggedSkip:
+    """Files that already have every required field get only ALBUM rewritten
+    (or no write at all when ALBUM already matches)."""
+
+    def test_fully_tagged_flac_rewrites_only_album(
+        self, tmp_path: Path, make_flac,
+    ):
+        folder = tmp_path / "show"
+        audio = make_flac(folder / "01.flac")
+        pre = FLAC(str(audio))
+        pre["ARTIST"] = "Hand Tagged Artist"
+        pre["TITLE"] = "Hand Tagged Title"
+        pre["TRACKNUMBER"] = "05"
+        pre["DATE"] = "1999-12-31"
+        pre["ALBUM"] = "Old Album Format"
+        pre.save()
+
+        tracks = [Track(number=1, title="Parser Title")]
+        plans = build_plans(_concert(folder, [audio], tracks))
+        results = apply_plans(plans, Mode.IN_PLACE)
+
+        assert all(r.ok for r in results)
+        assert results[0].album_only is True
+        assert results[0].changed is True
+
+        f = FLAC(str(audio))
+        # Only ALBUM was updated; everything else preserved.
+        assert f["ARTIST"] == ["Hand Tagged Artist"]
+        assert f["TITLE"] == ["Hand Tagged Title"]
+        assert f["TRACKNUMBER"] == ["05"]
+        assert f["DATE"] == ["1999-12-31"]
+        # Album now matches the canonical format the planner would emit.
+        assert f["ALBUM"][0].startswith("2000-01-01 ")
+
+    def test_matching_album_is_a_noop(self, tmp_path: Path, make_flac):
+        folder = tmp_path / "show"
+        audio = make_flac(folder / "01.flac")
+        tracks = [Track(number=1, title="T")]
+        c = _concert(folder, [audio], tracks)
+        plans = build_plans(c)
+
+        pre = FLAC(str(audio))
+        pre["ARTIST"] = "Existing Artist"
+        pre["TITLE"] = "Existing Title"
+        pre["TRACKNUMBER"] = "05"
+        pre["DATE"] = "1999-12-31"
+        pre["ALBUM"] = plans[0].album
+        pre.save()
+
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert results[0].ok
+        assert results[0].changed is False
+        assert results[0].album_only is True
+
+    def test_partial_tags_trigger_full_write(self, tmp_path: Path, make_flac):
+        folder = tmp_path / "show"
+        audio = make_flac(folder / "01.flac")
+        pre = FLAC(str(audio))
+        pre["ARTIST"] = "Existing Artist"
+        # TITLE deliberately missing — a gap triggers full plan.
+        pre["TRACKNUMBER"] = "05"
+        pre.save()
+
+        tracks = [Track(number=1, title="Parser Title")]
+        plans = build_plans(_concert(folder, [audio], tracks))
+        results = apply_plans(plans, Mode.IN_PLACE)
+
+        assert all(r.ok for r in results)
+        assert results[0].album_only is False
+
+        f = FLAC(str(audio))
+        # Full plan applied — ARTIST gets overwritten to the parsed value.
+        assert f["ARTIST"] == ["Test Artist"]
+        assert f["TITLE"] == ["Parser Title"]
+        assert f["TRACKNUMBER"] == ["01"]
+
+    def test_fully_tagged_mp3_rewrites_only_album(
+        self, tmp_path: Path, make_mp3,
+    ):
+        folder = tmp_path / "show"
+        audio = make_mp3(folder / "01.mp3")
+        pre = EasyID3(str(audio))
+        pre["artist"] = "Hand Tagged"
+        pre["title"] = "Hand Title"
+        pre["tracknumber"] = "07"
+        pre["date"] = "1999"
+        pre["album"] = "Old"
+        pre.save()
+
+        tracks = [Track(number=1, title="Parser Title")]
+        plans = build_plans(_concert(folder, [audio], tracks))
+        results = apply_plans(plans, Mode.IN_PLACE)
+
+        assert all(r.ok for r in results)
+        assert results[0].album_only is True
+
+        tags = EasyID3(str(audio))
+        assert tags["artist"] == ["Hand Tagged"]
+        assert tags["title"] == ["Hand Title"]
+        assert tags["album"][0].startswith("2000-01-01 ")
+
+    def test_metadata_only_plan_also_honours_skip(
+        self, tmp_path: Path, make_flac,
+    ):
+        # Metadata-only plans have no title/tracknumber to check; only ARTIST
+        # (and DATE, if the plan has one) need to be present.
+        folder = tmp_path / "show"
+        audio = make_flac(folder / "01.flac")
+        pre = FLAC(str(audio))
+        pre["ARTIST"] = "Hand Tagged"
+        pre["DATE"] = "1999-12-31"
+        pre["TITLE"] = "Preserved"
+        pre["TRACKNUMBER"] = "42"
+        pre["ALBUM"] = "stale"
+        pre.save()
+
+        c = _concert(folder, [audio], tracks=[])
+        plans = build_plans(c, metadata_only=True)
+        results = apply_plans(plans, Mode.IN_PLACE)
+
+        assert all(r.ok for r in results)
+        assert results[0].album_only is True
+        f = FLAC(str(audio))
+        assert f["ARTIST"] == ["Hand Tagged"]
+        assert f["TITLE"] == ["Preserved"]
+        assert f["TRACKNUMBER"] == ["42"]
