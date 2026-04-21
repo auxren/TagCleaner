@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from mutagen.flac import FLAC
 
-from tagcleaner.cli import main
+from tagcleaner.cli import _track_tolerance, main
 
 
 @pytest.fixture
@@ -149,6 +149,65 @@ class TestPlainUI:
         assert code == 0
         th = library / "Talking Heads 1980-08-27 Wollman Rink" / "01 Psycho Killer.flac"
         assert FLAC(str(th))["ARTIST"] == ["Talking Heads"]
+
+
+class TestTrackTolerance:
+    @pytest.mark.parametrize("tracks,files,override,expected", [
+        # auto mode: max(2, ceil(0.15 * min))
+        (10, 10, -1, 2),
+        (10, 11, -1, 2),     # shorter=10, ceil(1.5)=2
+        (25, 24, -1, 4),     # shorter=24, ceil(3.6)=4
+        (50, 30, -1, 5),     # shorter=30, ceil(4.5)=5
+        (8, 6, -1, 2),       # shorter=6, ceil(0.9)=1, floor at 2
+        (100, 100, -1, 15),  # shorter=100, ceil(15.0)=15
+        # strict
+        (10, 11, 0, 0),
+        # explicit override
+        (10, 11, 3, 3),
+        (50, 50, 7, 7),
+    ])
+    def test_helper(self, tracks, files, override, expected):
+        assert _track_tolerance(tracks, files, override) == expected
+
+    def test_partial_tag_when_within_tolerance(
+        self, tmp_path: Path, make_concert_tree,
+    ):
+        # info.txt lists 3 tracks, only 2 audio files — off by 1, within auto
+        # tolerance. Must tag both files rather than skip the whole concert.
+        make_concert_tree(
+            "Rush 1984-09-21 Maple Leaf Gardens",
+            audio=["01 a.flac", "02 b.flac"],
+            info_txt=(
+                "info.txt",
+                "Rush\n1984-09-21\nMaple Leaf Gardens\nToronto, Canada\nSBD\n\n"
+                "01. Spirit of Radio\n02. Tom Sawyer\n03. Encore: YYZ\n",
+            ),
+            root=tmp_path,
+        )
+        code = main([str(tmp_path), "--yes", "--no-banner"])
+        assert code == 0
+        f = FLAC(str(tmp_path / "Rush 1984-09-21 Maple Leaf Gardens" / "01 a.flac"))
+        assert f["ARTIST"] == ["Rush"]
+        assert f["TITLE"] == ["Spirit of Radio"]
+
+    def test_strict_flag_restores_old_behaviour(
+        self, tmp_path: Path, make_concert_tree,
+    ):
+        make_concert_tree(
+            "Rush 1984-09-21",
+            audio=["01 a.flac", "02 b.flac"],
+            info_txt=(
+                "info.txt",
+                "Rush\n1984-09-21\nMaple Leaf Gardens\nToronto, Canada\nSBD\n\n"
+                "01. Spirit of Radio\n02. Tom Sawyer\n03. Encore\n",
+            ),
+            root=tmp_path,
+        )
+        code = main([str(tmp_path), "--yes", "--no-banner", "--track-tolerance", "0"])
+        assert code == 0
+        # Strict mode → nothing tagged.
+        f = FLAC(str(tmp_path / "Rush 1984-09-21" / "01 a.flac"))
+        assert "ARTIST" not in f
 
 
 class TestErrorHandling:

@@ -74,6 +74,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Ignore history for this run (force re-parse of every folder).")
     p.add_argument("--min-confidence", type=float, default=0.5,
                    help="Skip concerts below this confidence in non-dry-run modes (default: 0.5).")
+    p.add_argument("--track-tolerance", type=int, default=-1, metavar="N",
+                   help="Max tracks by which info.txt and audio count may disagree before "
+                        "skipping. -1 (default) picks a per-concert tolerance of "
+                        "max(2, 15%% of the shorter list); 0 forces strict equality.")
     p.add_argument("--yes", action="store_true",
                    help="Do not prompt before applying tags.")
     p.add_argument("-v", "--verbose", action="store_true", help="Show full per-track table.")
@@ -262,6 +266,24 @@ def _confirm(prompt: str) -> bool:
     return ans in ("y", "yes")
 
 
+def _track_tolerance(track_count: int, audio_count: int, override: int) -> int:
+    """Maximum |tracks - files| we'll accept before skipping.
+
+    ``override`` mirrors the ``--track-tolerance`` flag:
+
+    * ``-1`` — auto: ``max(2, ceil(0.15 * min(tracks, files)))``. Covers the
+      common tape-trader cases (encore listed but not recorded, a tune-up at
+      the start, a one-track splitting/combining difference) without letting
+      silently-misaligned massive mismatches through.
+    * ``0`` — strict equality, matching the pre-tolerance behaviour.
+    * any positive integer — absolute cap, no scaling.
+    """
+    if override >= 0:
+        return override
+    shorter = min(track_count, audio_count)
+    return max(2, -(-shorter * 15 // 100))  # ceil(0.15 * shorter) without math.ceil
+
+
 def _apply(
     concerts: list[Concert],
     args: argparse.Namespace,
@@ -281,10 +303,24 @@ def _apply(
         if not c.tracks or not c.audio_files:
             skipped += 1
             continue
-        if len(c.tracks) != len(c.audio_files) and mode is not Mode.DRY_RUN:
-            console.print(f"  [red]⏭  skip[/] (track mismatch) [dim]{c.folder.name}[/]")
-            skipped += 1
-            continue
+        mismatch = abs(len(c.tracks) - len(c.audio_files))
+        if mismatch > 0 and mode is not Mode.DRY_RUN:
+            tolerance = _track_tolerance(
+                len(c.tracks), len(c.audio_files), args.track_tolerance,
+            )
+            if mismatch > tolerance:
+                console.print(
+                    f"  [red]⏭  skip[/] (track mismatch "
+                    f"{len(c.tracks)}/{len(c.audio_files)}, off by {mismatch}) "
+                    f"[dim]{c.folder.name}[/]"
+                )
+                skipped += 1
+                continue
+            console.print(
+                f"  [yellow]⚠️  partial tag[/] "
+                f"({len(c.tracks)} tracks / {len(c.audio_files)} files) "
+                f"[dim]{c.folder.name}[/]"
+            )
         source_root = args.path.resolve()
         plans = build_plans(
             c,
