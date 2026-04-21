@@ -176,6 +176,39 @@ class TestListCandidateDirs:
         out = list_candidate_dirs(tmp_path)
         assert [p.name for p, _ in out] == ["show1", "show2", "show3"]
 
+    def test_root_with_orphan_audio_still_descends(self, tmp_path: Path, make_flac):
+        # Real-world case: library root has a handful of loose audio files
+        # (orphans the user hasn't organised into folders yet) AND the
+        # properly-organised concert folders. Earlier versions stopped at the
+        # root the moment they saw audio, hiding every real show below.
+        for orphan in ("loose1.flac", "loose2.flac", "loose3.flac"):
+            make_flac(tmp_path / orphan)
+        for show in ("show1", "show2", "show3"):
+            d = tmp_path / show
+            d.mkdir()
+            make_flac(d / "01.flac")
+        names = sorted(p.name for p, _ in list_candidate_dirs(tmp_path))
+        # Root itself is reported (orphans still get a chance at metadata)
+        # and every show underneath is discovered too.
+        assert tmp_path.name in names
+        for show in ("show1", "show2", "show3"):
+            assert show in names
+
+    def test_concert_with_artwork_subdir_is_single_candidate(
+        self, tmp_path: Path, make_flac,
+    ):
+        # Single concert at the root with an accessory Artwork/ subdir:
+        # descent is harmless because Artwork has no audio, and the concert
+        # remains the only candidate.
+        show = tmp_path / "gd1977-05-08"
+        show.mkdir()
+        make_flac(show / "01.flac")
+        artwork = show / "Artwork"
+        artwork.mkdir()
+        (artwork / "cover.jpg").write_bytes(b"\xff\xd8\xff\xe0")
+        names = [p.name for p, _ in list_candidate_dirs(tmp_path)]
+        assert names == ["gd1977-05-08"]
+
 
 class TestScan:
     def test_end_to_end(self, tmp_path: Path, make_concert_tree):

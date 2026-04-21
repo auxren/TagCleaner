@@ -196,6 +196,13 @@ def _collect_candidates(
         mtime = 0.0
     if audio:
         out.append((folder, mtime))
+        # A folder with audio is usually a concert, but it can also be a
+        # library root where someone left stray loose files next to organised
+        # show subfolders. Keep descending so those nested shows aren't
+        # hidden; descent is a no-op for concerts whose only children are
+        # accessory dirs like ``Artwork``.
+        for sub in subdirs:
+            _collect_candidates(sub, out, depth=depth + 1, max_depth=max_depth)
         return
     if not subdirs:
         return
