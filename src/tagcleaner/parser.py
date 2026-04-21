@@ -389,10 +389,18 @@ def parse_info_txt(body: str) -> dict:
         m = re.search(pat, body, re.I)
         if m:
             val = m.group(1).strip().strip(",")
+            if not val:
+                continue
             # Taper "Location:" lines almost always describe mic placement,
             # not a venue. Reject values that look like placement jargon so
             # they don't win over real venue lines parsed later.
             if key in ("venue", "artist") and _MIC_PLACEMENT.search(val):
+                continue
+            # "Venue: dsp-quattro > MBIT+ > flac" is a labelled lineage chain,
+            # not a venue. Same for "(D-sbd), recorded from...".
+            if key == "venue" and (
+                _LINEAGE_CHAIN.search(val) or _NON_VENUE_PREFIX.match(val)
+            ):
                 continue
             data[key] = val
 
@@ -410,7 +418,7 @@ def parse_info_txt(body: str) -> dict:
             break
         if "venue" not in data or "city" not in data:
             v, c, r = _split_venue_city_region(ln)
-            if v and c:
+            if v and c and _looks_like_venue(v):
                 data.setdefault("venue", v)
                 data.setdefault("city", c)
                 if r:
@@ -466,6 +474,25 @@ _MIC_PLACEMENT = re.compile(
     re.I,
 )
 
+# Signal-chain / lineage notation — "dsp-quattro 3 > MBIT+ > 16/44.1 wav > flac"
+# or "AKG C568 → Sound Devices 722 → WAV". These describe transfer chains, not
+# venues. Any whitespace-flanked arrow is enough; real venue names don't carry
+# arrow separators.
+_LINEAGE_CHAIN = re.compile(r"\s[>→]\s|\s->\s")
+
+# Taper-notes section headers and parenthesised source-kind prefixes that
+# sometimes lead a standalone line: "Transfer Info: ...", "The Recording: ...",
+# "(D-sbd), recorded from the board". These are never venue names.
+_NON_VENUE_PREFIX = re.compile(
+    r"^\s*(?:"
+    r"transfer(?:\s+info)?|recording(?:\s+info|\s+notes)?|the\s+recording|"
+    r"lineage|source(?:\s+info)?|"
+    r"tap(?:er|ed(?:\s+by)?)|transferred|mastered|setup|equipment|"
+    r"\(\s*[A-Za-z][A-Za-z0-9\-\s]{0,14}\s*\)[,\s]"
+    r")",
+    re.I,
+)
+
 
 def _first_artist_line(nonblank: list[str]) -> str | None:
     """Return the first line that plausibly names the artist.
@@ -505,10 +532,19 @@ def _looks_like_venue(line: str) -> bool:
         return False
     if _NOISE_FIRST_LINE.match(line):
         return False
+    if _NON_VENUE_PREFIX.match(line):
+        return False
+    if _LINEAGE_CHAIN.search(line):
+        return False
     if re.search(r"\d{5,}", line):
         return False
     low = line.lower()
     if any(tok in low for tok in ("http://", "https://", "@", "flac ", ".flac", ".shn", ".wav", "kbps", "khz")):
+        return False
+    # Dense-digit lines (>30% digits) are typically mangled date/time stamps,
+    # not venues. Catches 'MM/DD/YYYY - Friday' that slipped through parse_date.
+    digits = sum(ch.isdigit() for ch in line)
+    if digits and digits / max(len(line), 1) > 0.3:
         return False
     if _MIC_PLACEMENT.search(line):
         return False

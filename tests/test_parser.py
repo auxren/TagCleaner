@@ -279,6 +279,98 @@ class TestMicPlacementRejected:
             assert "FOB" not in data["venue"] and "DFC" not in data["venue"]
 
 
+class TestVenueNoiseRejected:
+    """Taper notes often slip lineage chains, section headers, or
+    parenthesised source-kind prefixes into the venue slot. These test bodies
+    are verbatim shapes seen in real-world info.txt files."""
+
+    def test_lineage_chain_rejected_as_venue(self):
+        # Lineage chains with '>'-arrows sometimes have a city tail that makes
+        # _split_venue_city_region take the bait. Reject the whole line.
+        body = (
+            "Grateful Dead\n"
+            "1987-08-22\n"
+            "dsp-quattro 3 > MBIT+ > 16/44.1 wav > xACT 2.12 > flac, Glenside, PA\n"
+            "01. Tune\n"
+        )
+        data = parse_info_txt(body)
+        assert ">" not in data.get("venue", "")
+        assert "dsp-quattro" not in data.get("venue", "")
+
+    def test_labeled_venue_with_lineage_rejected(self):
+        body = (
+            "Grateful Dead\n"
+            "1987-08-22\n"
+            "Venue: AKG > Sony PCM > flac\n"
+        )
+        data = parse_info_txt(body)
+        assert "venue" not in data or "AKG" not in data["venue"]
+
+    def test_transfer_info_not_picked_as_venue(self):
+        body = (
+            "Phish\n"
+            "1997-12-31\n"
+            "Transfer Info: JB3 -> SoundForge 6.0 -> CDWave -> flac\n"
+            "01. NICU\n"
+        )
+        data = parse_info_txt(body)
+        assert "venue" not in data or "Transfer" not in data["venue"]
+
+    def test_the_recording_header_not_picked_as_venue(self):
+        body = (
+            "Phish\n"
+            "1997-12-31\n"
+            "The Recording: mics clamped to the rail at 10ft\n"
+            "01. NICU\n"
+        )
+        data = parse_info_txt(body)
+        assert "venue" not in data or "Recording" not in data["venue"]
+
+    def test_parenthesised_source_kind_prefix_rejected(self):
+        body = (
+            "Phish\n"
+            "1997-12-31\n"
+            "(D-sbd), recorded from the board feed\n"
+            "01. NICU\n"
+        )
+        data = parse_info_txt(body)
+        assert "venue" not in data or "D-sbd" not in data["venue"]
+
+    def test_mm_dd_yyyy_date_line_rejected_as_venue(self):
+        # parse_date doesn't parse American-style MM/DD/YYYY; the dense-digit
+        # guard in _looks_like_venue catches it instead.
+        body = (
+            "Phish\n"
+            "1997-12-31\n"
+            "02/19/2010 - Friday\n"
+            "01. NICU\n"
+        )
+        data = parse_info_txt(body)
+        assert "venue" not in data or "02/19/2010" not in data["venue"]
+
+    def test_real_venue_still_accepted(self):
+        body = (
+            "Phish\n"
+            "1997-12-31\n"
+            "Madison Square Garden\n"
+            "New York, NY\n"
+            "01. NICU\n"
+        )
+        data = parse_info_txt(body)
+        assert data["venue"] == "Madison Square Garden"
+        assert data["city"] == "New York"
+        assert data["region"] == "NY"
+
+    def test_labeled_venue_still_accepted(self):
+        body = (
+            "Phish\n"
+            "1997-12-31\n"
+            "Venue: Madison Square Garden\n"
+        )
+        data = parse_info_txt(body)
+        assert data["venue"] == "Madison Square Garden"
+
+
 class TestSplitVenueCityRegion:
     def test_state_code(self):
         assert _split_venue_city_region("Wollman Rink, New York, NY") == (
