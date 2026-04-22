@@ -263,3 +263,55 @@ class TestParserIntegration:
 
         concert = build_concert(show, [show / "01.flac"], None, lexicon=None)
         assert concert.artist is None
+
+    def test_walks_grandparent_when_parent_is_box(
+        self, tmp_path: Path, make_flac,
+    ):
+        # /Bob Dylan/Dylan 74/The Shows/  — neither 'The Shows' nor 'Dylan 74'
+        # exists in the lexicon, but the grandparent 'Bob Dylan' does.
+        show = tmp_path / "Bob Dylan" / "Dylan 74" / "The Shows"
+        make_flac(show / "01.flac")
+        lex = Lexicon(artists={"Bob Dylan": 50})
+
+        concert = build_concert(show, [show / "01.flac"], None, lexicon=lex)
+        assert concert.artist == "Bob Dylan"
+
+    def test_strips_year_suffix_from_ancestor(
+        self, tmp_path: Path, make_flac,
+    ):
+        # Parent is 'Bruce Springsteen 1978-1978 The Unbroken Promise (6cd demos)'.
+        # Truncating at the first year exposes the bare artist name.
+        parent = tmp_path / "Bruce Springsteen 1978-1978 The Unbroken Promise (6cd demos)"
+        show = parent / "CD1-2 Still In The Vaults"
+        make_flac(show / "01.flac")
+        lex = Lexicon(artists={"Bruce Springsteen": 50})
+
+        concert = build_concert(show, [show / "01.flac"], None, lexicon=lex)
+        assert concert.artist == "Bruce Springsteen"
+
+    def test_strips_leading_track_number_from_ancestor(
+        self, tmp_path: Path, make_flac,
+    ):
+        # Parent is '06 Bob Dylan-Highlights from Tour'; strip the track number
+        # and split on the hyphen to expose 'Bob Dylan'.
+        parent = tmp_path / "06 Bob Dylan-Highlights from Tour"
+        show = parent / "cd1"
+        make_flac(show / "01.flac")
+        lex = Lexicon(artists={"Bob Dylan": 50})
+
+        concert = build_concert(show, [show / "01.flac"], None, lexicon=lex)
+        assert concert.artist == "Bob Dylan"
+
+    def test_walk_stops_at_organisational_wrapper(
+        self, tmp_path: Path, make_flac,
+    ):
+        # Walk would otherwise climb out of the artist tree into 'Tapes'
+        # and beyond — the _NOT_AN_ARTIST set has to halt that climb.
+        show = tmp_path / "Tapes" / "Black Sabbath" / "1969-12-17 Show"
+        make_flac(show / "01.flac")
+        lex = Lexicon(artists={"Black Sabbath": 50})
+
+        concert = build_concert(show, [show / "01.flac"], None, lexicon=lex)
+        # Black Sabbath is the grandparent and Tapes is the great-grandparent;
+        # we stop at Tapes but not before finding Black Sabbath.
+        assert concert.artist == "Black Sabbath"

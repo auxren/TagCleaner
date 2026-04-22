@@ -690,26 +690,82 @@ def _split_city_region(line: str) -> tuple[str, str | None]:
     return parts[0], None
 
 
+_ANCESTOR_DEPTH = 4
+
+
 def _lexicon_artist_from_parent(folder: Path, lexicon: Lexicon) -> str | None:
-    """Ask the lexicon whether the parent folder names a known artist.
+    """Walk up to ``_ANCESTOR_DEPTH`` ancestors looking for a known artist.
 
     Date-first folders (``/Tapes/Black Sabbath/1969-XX-XX Show/``) leave the
-    parser without anything to guess from, but the parent directory usually
-    *is* the artist. We only accept the parent if the lexicon already knows
-    that spelling — that's the self-bootstrapping safety net.
+    parser without anything to guess from, but somewhere up the chain the
+    artist usually appears as a folder name. For each ancestor we try the
+    bare name plus a couple of cleanups (``Bruce Springsteen 1978-...``,
+    ``Bob Dylan - Tour Title``, ``06 Bob Dylan-...``) before consulting the
+    lexicon. We stop the moment we hit an organisational wrapper like
+    ``Tapes`` — that means we've left the artist's tree.
     """
-    parent = folder.parent
-    if parent is None or parent == folder:
-        return None
-    name = parent.name
-    if not name or name in (".", "/"):
-        return None
-    if name.lower() in _NOT_AN_ARTIST:
-        return None
-    # Bare years / dates — these are organisational wrappers, not artists.
-    if _first_date_position(name) == 0 or YEAR_ONLY.fullmatch(name.strip()):
-        return None
-    return lexicon.match_artist(name)
+    current = folder.parent
+    for _ in range(_ANCESTOR_DEPTH):
+        if current is None or current == current.parent:
+            return None
+        name = current.name
+        if not name or name in (".", "/"):
+            return None
+        if name.lower() in _NOT_AN_ARTIST:
+            return None
+        # Year-only or date-first wrappers ("1987/", "2003-12-17 Show") aren't
+        # artists — skip them but keep walking to the next ancestor.
+        if YEAR_ONLY.fullmatch(name.strip()) or _first_date_position(name) == 0:
+            current = current.parent
+            continue
+        for candidate in _ancestor_candidates(name):
+            match = lexicon.match_artist(candidate)
+            if match:
+                return match
+        current = current.parent
+    return None
+
+
+def _ancestor_candidates(name: str) -> list[str]:
+    """Variants of *name* worth probing against the lexicon.
+
+    Folder names often pack the artist plus tour/year/disc trailers
+    (``Bruce Springsteen 1978-1978 The Unbroken Promise``,
+    ``Blackmore, Gillan, Glover, Lord, Paice (1970)``,
+    ``06 Bob Dylan-Highlights from Temples in Flames Tour``); strip the
+    trailers so the lexicon can hit the bare artist name.
+    """
+    seen: list[str] = []
+
+    def _push(s: str | None) -> None:
+        if not s:
+            return
+        s = s.strip(" -,_([{")
+        if s and s not in seen:
+            seen.append(s)
+
+    _push(name)
+    # Strip a leading track number ("06 Bob Dylan-..." → "Bob Dylan-...").
+    no_track = re.sub(r"^\d{1,3}[\s._-]+", "", name)
+    if no_track != name:
+        _push(no_track)
+        name_for_split = no_track
+    else:
+        name_for_split = name
+    # Cut at the first 4-digit year ("Bruce Springsteen 1978-..." → "Bruce Springsteen").
+    year = re.search(r"\b(19|20)\d{2}\b", name_for_split)
+    if year and year.start() > 0:
+        _push(name_for_split[: year.start()])
+    # Cut at " - " separator ("Bob Dylan - Flames..." → "Bob Dylan").
+    if " - " in name_for_split:
+        _push(name_for_split.split(" - ", 1)[0])
+    # Cut at "-" separator only when the head has spaces (avoids splitting
+    # hyphenated band names like "Crosby-Nash" or single tokens).
+    if "-" in name_for_split:
+        head = name_for_split.split("-", 1)[0]
+        if " " in head:
+            _push(head)
+    return seen
 
 
 def build_concert(
