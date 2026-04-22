@@ -81,6 +81,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--prompt-unknown", action="store_true",
                    help="Ask for an artist on each concert the parser couldn't resolve. "
                         "Answers feed the lexicon for future scans.")
+    p.add_argument("--minimal-tags", action="store_true",
+                   help="Write only ARTIST, ALBUMARTIST, ALBUM, and TRACKNUMBER. "
+                        "Leave any existing DATE/TITLE/DISC tags untouched.")
     p.add_argument("--min-confidence", type=float, default=0.5,
                    help="Skip concerts below this confidence in non-dry-run modes (default: 0.5).")
     p.add_argument("--track-tolerance", type=int, default=-1, metavar="N",
@@ -463,6 +466,7 @@ def _apply(
             copy_to_root=args.copy_to.resolve() if args.copy_to else None,
             source_root=source_root,
             metadata_only=metadata_only,
+            minimal=args.minimal_tags,
         )
         results = apply_plans(plans, mode)
         folder_fails = 0

@@ -282,6 +282,11 @@ Supports FLAC (Vorbis comments) and MP3 (ID3 via EasyID3). Other formats in
 the audio-file scan (`.m4a`, `.ogg`, `.opus`, `.wav`) are discovered but not
 yet tagged — opening an issue or PR is welcome.
 
+Pass `--minimal-tags` to write only `ARTIST`, `ALBUMARTIST`, `ALBUM`, and
+`TRACKNUMBER`. Any existing `DATE`, `TITLE`, or `DISCNUMBER` tags on the
+file are left exactly as they were — useful when your own `TITLE` tags
+are cleaner than what the parser can reconstruct from the folder.
+
 ## Confidence scoring
 
 Every concert gets a `0.00`–`1.00` confidence score:

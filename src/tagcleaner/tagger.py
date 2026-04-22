@@ -32,6 +32,9 @@ class TagPlan:
     title: str | None = None
     disc: int | None = None
     disc_total: int | None = None
+    # When True, only ARTIST, ALBUMARTIST, ALBUM, and TRACKNUMBER are written;
+    # existing DATE/TITLE/DISC tags on the file are left untouched.
+    minimal: bool = False
 
 
 @dataclass
@@ -49,6 +52,7 @@ def build_plans(
     copy_to_root: Path | None = None,
     source_root: Path | None = None,
     metadata_only: bool = False,
+    minimal: bool = False,
 ) -> list[TagPlan]:
     """Pair parsed tracks with audio files and produce a TagPlan per file.
     If track/audio counts mismatch we pair by position up to the shorter list;
@@ -80,6 +84,7 @@ def build_plans(
                 artist=artist,
                 album=album,
                 date=date,
+                minimal=minimal,
             ))
         return plans
 
@@ -94,6 +99,7 @@ def build_plans(
             title=track.title,
             disc=track.disc,
             disc_total=track.disc_total,
+            minimal=minimal,
         ))
     return plans
 
@@ -135,15 +141,18 @@ def _is_already_tagged(plan: TagPlan, tags) -> bool:
 
     ``tags`` can be any mutagen-style dict (FLAC or EasyID3). ALBUM is
     intentionally excluded — we always want to rewrite it to our
-    canonical ``YYYY-MM-DD Venue, City [source]`` format.
+    canonical ``YYYY-MM-DD Venue, City [source]`` format. In ``minimal``
+    mode we only check the fields we'd actually write (artist + track).
     """
     if not _tag_present(tags, "ARTIST") and not _tag_present(tags, "artist"):
-        return False
-    if plan.date and not (_tag_present(tags, "DATE") or _tag_present(tags, "date")):
         return False
     if plan.track is not None and not (
         _tag_present(tags, "TRACKNUMBER") or _tag_present(tags, "tracknumber")
     ):
+        return False
+    if plan.minimal:
+        return True
+    if plan.date and not (_tag_present(tags, "DATE") or _tag_present(tags, "date")):
         return False
     if plan.title is not None and not (
         _tag_present(tags, "TITLE") or _tag_present(tags, "title")
@@ -190,21 +199,22 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool]:
         audio["ARTIST"] = plan.artist
         audio["ALBUMARTIST"] = plan.artist
         audio["ALBUM"] = plan.album
-        if plan.date:
-            audio["DATE"] = plan.date
         if plan.track is not None:
             audio["TRACKNUMBER"] = f"{plan.track:02d}"
-        if plan.title is not None:
-            audio["TITLE"] = plan.title
-        if plan.disc is not None and plan.disc_total is not None:
-            audio["DISCNUMBER"] = str(plan.disc)
-            audio["DISCTOTAL"] = str(plan.disc_total)
-        elif plan.track is not None:
-            # Only scrub disc tags when we're writing a full per-track plan.
-            # Metadata-only plans leave any existing disc tags alone.
-            for k in ("DISCNUMBER", "DISCTOTAL"):
-                if k in audio:
-                    del audio[k]
+        if not plan.minimal:
+            if plan.date:
+                audio["DATE"] = plan.date
+            if plan.title is not None:
+                audio["TITLE"] = plan.title
+            if plan.disc is not None and plan.disc_total is not None:
+                audio["DISCNUMBER"] = str(plan.disc)
+                audio["DISCTOTAL"] = str(plan.disc_total)
+            elif plan.track is not None:
+                # Only scrub disc tags when we're writing a full per-track plan.
+                # Metadata-only plans leave any existing disc tags alone.
+                for k in ("DISCNUMBER", "DISCTOTAL"):
+                    if k in audio:
+                        del audio[k]
         audio.save()
         return True, False
     if ext == ".mp3":
@@ -224,14 +234,15 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool]:
         audio["artist"] = plan.artist
         audio["albumartist"] = plan.artist
         audio["album"] = plan.album
-        if plan.date:
-            audio["date"] = plan.date
         if plan.track is not None:
             audio["tracknumber"] = f"{plan.track:02d}"
-        if plan.title is not None:
-            audio["title"] = plan.title
-        if plan.disc is not None and plan.disc_total is not None:
-            audio["discnumber"] = f"{plan.disc}/{plan.disc_total}"
+        if not plan.minimal:
+            if plan.date:
+                audio["date"] = plan.date
+            if plan.title is not None:
+                audio["title"] = plan.title
+            if plan.disc is not None and plan.disc_total is not None:
+                audio["discnumber"] = f"{plan.disc}/{plan.disc_total}"
         audio.save()
         return True, False
     raise RuntimeError(f"unsupported audio format: {ext}")

@@ -328,3 +328,93 @@ class TestAlreadyTaggedSkip:
         assert f["ARTIST"] == ["Hand Tagged"]
         assert f["TITLE"] == ["Preserved"]
         assert f["TRACKNUMBER"] == ["42"]
+
+
+class TestMinimalTags:
+    """--minimal-tags writes only ARTIST/ALBUMARTIST/ALBUM/TRACKNUMBER and
+    leaves any existing DATE/TITLE/DISC tags alone."""
+
+    def test_flac_writes_only_core_fields(self, tmp_path: Path, make_flac):
+        folder = tmp_path / "show"
+        audio = make_flac(folder / "01.flac")
+        tracks = [Track(number=1, title="Parser Title", disc=1, disc_total=2)]
+        plans = build_plans(_concert(folder, [audio], tracks), minimal=True)
+        results = apply_plans(plans, Mode.IN_PLACE)
+
+        assert all(r.ok for r in results)
+        f = FLAC(str(audio))
+        assert f["ARTIST"] == ["Test Artist"]
+        assert f["ALBUMARTIST"] == ["Test Artist"]
+        assert f["TRACKNUMBER"] == ["01"]
+        assert f["ALBUM"][0].startswith("2000-01-01 ")
+        assert "DATE" not in f
+        assert "TITLE" not in f
+        assert "DISCNUMBER" not in f
+
+    def test_flac_preserves_existing_title_and_date(
+        self, tmp_path: Path, make_flac,
+    ):
+        folder = tmp_path / "show"
+        audio = make_flac(folder / "01.flac")
+        pre = FLAC(str(audio))
+        pre["TITLE"] = "Existing Title"
+        pre["DATE"] = "1999-12-31"
+        pre["DISCNUMBER"] = "3"
+        pre.save()
+
+        tracks = [Track(number=1, title="Parser Title")]
+        plans = build_plans(_concert(folder, [audio], tracks), minimal=True)
+        results = apply_plans(plans, Mode.IN_PLACE)
+
+        assert all(r.ok for r in results)
+        f = FLAC(str(audio))
+        # Core fields rewritten.
+        assert f["ARTIST"] == ["Test Artist"]
+        assert f["TRACKNUMBER"] == ["01"]
+        # Non-core fields preserved verbatim.
+        assert f["TITLE"] == ["Existing Title"]
+        assert f["DATE"] == ["1999-12-31"]
+        assert f["DISCNUMBER"] == ["3"]
+
+    def test_mp3_minimal(self, tmp_path: Path, make_mp3):
+        folder = tmp_path / "show"
+        audio = make_mp3(folder / "01.mp3")
+        pre = EasyID3(str(audio))
+        pre["title"] = "Keep Me"
+        pre["date"] = "1999"
+        pre.save()
+
+        tracks = [Track(number=1, title="Parser Title")]
+        plans = build_plans(_concert(folder, [audio], tracks), minimal=True)
+        results = apply_plans(plans, Mode.IN_PLACE)
+
+        assert all(r.ok for r in results)
+        tags = EasyID3(str(audio))
+        assert tags["artist"] == ["Test Artist"]
+        assert tags["tracknumber"] == ["01"]
+        assert tags["title"] == ["Keep Me"]
+        assert tags["date"] == ["1999"]
+
+    def test_already_core_tagged_is_album_only(
+        self, tmp_path: Path, make_flac,
+    ):
+        # In minimal mode only ARTIST + TRACKNUMBER need to be present for
+        # the "already tagged, just rewrite ALBUM" fast path to fire — DATE
+        # and TITLE don't count.
+        folder = tmp_path / "show"
+        audio = make_flac(folder / "01.flac")
+        pre = FLAC(str(audio))
+        pre["ARTIST"] = "Hand Tagged"
+        pre["TRACKNUMBER"] = "07"
+        pre["ALBUM"] = "Stale"
+        pre.save()
+
+        tracks = [Track(number=1, title="Parser Title")]
+        plans = build_plans(_concert(folder, [audio], tracks), minimal=True)
+        results = apply_plans(plans, Mode.IN_PLACE)
+
+        assert results[0].album_only is True
+        assert results[0].changed is True
+        f = FLAC(str(audio))
+        assert f["ARTIST"] == ["Hand Tagged"]  # not rewritten
+        assert f["ALBUM"][0].startswith("2000-01-01 ")
