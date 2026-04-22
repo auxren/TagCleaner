@@ -690,7 +690,11 @@ def _split_city_region(line: str) -> tuple[str, str | None]:
     return parts[0], None
 
 
-_ANCESTOR_DEPTH = 4
+# Deep box-set trees (``/Artist/Artist - Archives-NN/archives.vols_01-17/Volume XV/disc/<show>/CD 2``)
+# push the artist folder 6–8 levels above the leaf. Cap the walk so we don't
+# climb forever into unrelated trees; ``_NOT_AN_ARTIST`` stops us earlier
+# when we reach the library root.
+_ANCESTOR_DEPTH = 8
 
 
 def _lexicon_artist_from_parent(folder: Path, lexicon: Lexicon) -> str | None:
