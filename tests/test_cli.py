@@ -315,6 +315,79 @@ class TestPromptUnknown:
         assert code == 0
 
 
+class TestLexiconImport:
+    """`tagcleaner lexicon import DIR --lexicon FILE` seeds the lexicon
+    from a flat directory of release folders."""
+
+    def _populate(self, root: Path, names: list[str]) -> None:
+        for n in names:
+            (root / n).mkdir()
+
+    def test_imports_fresh_lexicon(self, tmp_path: Path):
+        releases = tmp_path / "qobuz"
+        releases.mkdir()
+        self._populate(releases, [
+            "Morcheeba",
+            "MGMT - Oracular Spectacular (2007) [24B-44.1kHz]",
+            "MGMT - Congratulations (2010) [16bit-44.1kHz]",
+            "Sonny Rollins - 1996 - Silver City (16bit-44.1kHz)",
+            "Various Artists",  # skipped
+            "_work_in_progress",  # skipped
+        ])
+        lex_path = tmp_path / "lex.json"
+        code = main([
+            "lexicon", "import", str(releases),
+            "--lexicon", str(lex_path),
+        ])
+        assert code == 0
+        lex = json.loads(lex_path.read_text(encoding="utf-8"))
+        assert lex["artists"]["MGMT"] == 2
+        assert lex["artists"]["Sonny Rollins"] >= 2  # floored to min-count
+        assert lex["artists"]["Morcheeba"] >= 2
+        assert "Various Artists" not in lex["artists"]
+
+    def test_dry_run_writes_nothing(self, tmp_path: Path):
+        releases = tmp_path / "qobuz"
+        releases.mkdir()
+        self._populate(releases, ["Morcheeba", "MGMT"])
+        lex_path = tmp_path / "lex.json"
+        code = main([
+            "lexicon", "import", str(releases),
+            "--lexicon", str(lex_path), "--dry-run",
+        ])
+        assert code == 0
+        assert not lex_path.exists()
+
+    def test_merges_into_existing_lexicon(self, tmp_path: Path):
+        lex_path = tmp_path / "lex.json"
+        lex_path.write_text(json.dumps({
+            "schema": 1,
+            "artists": {"Pink Floyd": 50},
+            "venues": {},
+        }))
+        releases = tmp_path / "qobuz"
+        releases.mkdir()
+        self._populate(releases, [
+            "Pink Floyd - The Wall (1979)",  # existing, bumps count
+            "Morcheeba",  # new
+        ])
+        code = main([
+            "lexicon", "import", str(releases),
+            "--lexicon", str(lex_path),
+        ])
+        assert code == 0
+        lex = json.loads(lex_path.read_text(encoding="utf-8"))
+        assert lex["artists"]["Pink Floyd"] >= 52  # 50 + floor(2)
+        assert "Morcheeba" in lex["artists"]
+
+    def test_missing_directory_errors(self, tmp_path: Path):
+        code = main([
+            "lexicon", "import", str(tmp_path / "nope"),
+            "--lexicon", str(tmp_path / "lex.json"),
+        ])
+        assert code == 2
+
+
 class TestErrorHandling:
     def test_nonexistent_path(self, tmp_path: Path):
         code = main([str(tmp_path / "does-not-exist"), "--dry-run", "--no-banner", "--yes"])

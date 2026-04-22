@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -556,8 +557,127 @@ def _build_lexicon(history: History, path: Path | None) -> Lexicon | None:
     return lex
 
 
+# Trailing "(24bit-192kHz)" / "[24B-44.1kHz]" fidelity tags on Qobuz/HDTracks
+# folders. Stripping them exposes the bare "Artist - Album" underneath.
+_BITRATE_TAIL = re.compile(r"\s*[\(\[](\d{1,2}\s*bit|\d{1,2}B)[-\s]?\d", re.IGNORECASE)
+
+
+def _extract_release_artist(folder_name: str) -> str | None:
+    """Extract the artist from a release-folder name, or None to skip.
+
+    Handles the common shapes in a studio-release library:
+      * ``Artist`` (bare)                      → ``Artist``
+      * ``Artist - Album (1993) [24B-192kHz]`` → ``Artist``
+      * ``Artist - 1993 - Album (24bit-192)``  → ``Artist``
+      * ``_test`` / ``.hidden`` / ``(V/A) ...`` → None
+      * dotted shorthand like ``Smith.Joe.1972.Album.Src.abcd`` → None (ambiguous)
+    """
+    if not folder_name or folder_name[0] in "_.":
+        return None
+    if folder_name[0] in "([":
+        return None
+    if " - " in folder_name:
+        head = folder_name.split(" - ", 1)[0].strip()
+        return head or None
+    # "Smith.Joe.1972.Album.Src.abcd" — too many fields to disambiguate.
+    if folder_name.count(".") >= 3 and " " not in folder_name.split(".")[0]:
+        return None
+    cleaned = _BITRATE_TAIL.split(folder_name)[0].strip()
+    return cleaned or None
+
+
+def _lexicon_command(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(
+        prog="tagcleaner lexicon",
+        description="Manage the artist/venue lexicon.",
+    )
+    sub = p.add_subparsers(dest="action", required=True)
+
+    imp = sub.add_parser(
+        "import",
+        help="Seed the lexicon from a directory of releases (one folder per album).",
+    )
+    imp.add_argument("dir", type=Path,
+                     help="Directory whose top-level folders name an artist or 'Artist - Album'.")
+    imp.add_argument("--lexicon", type=Path, required=True, metavar="FILE",
+                     help="Lexicon file to merge into (created if missing).")
+    imp.add_argument("--min-count", type=int, default=2, metavar="N",
+                     help="Floor each added count at N so singletons clear the match "
+                          "threshold (default: 2). Use 1 to preserve true counts.")
+    imp.add_argument("--dry-run", action="store_true",
+                     help="Report what would change without writing.")
+
+    args = p.parse_args(argv)
+    if args.action == "import":
+        return _lexicon_import(args)
+    return 2
+
+
+def _lexicon_import(args: argparse.Namespace) -> int:
+    from collections import Counter
+
+    if not args.dir.is_dir():
+        console.print(f"[bold red]❌ not a directory:[/] {args.dir}")
+        return 2
+
+    counter: Counter[str] = Counter()
+    total = 0
+    skipped = 0
+    for entry in args.dir.iterdir():
+        if not entry.is_dir():
+            continue
+        total += 1
+        artist = _extract_release_artist(entry.name)
+        if artist is None:
+            skipped += 1
+            continue
+        counter[artist] += 1
+    # Compilation bucket — not an artist the lexicon should confirm for.
+    counter.pop("Various Artists", None)
+
+    console.print(
+        f"[cyan]📂 {args.dir}[/]: {total} folder(s), "
+        f"{len(counter)} unique artists, {skipped} skipped."
+    )
+
+    lex = Lexicon.load(args.lexicon)
+    before = set(lex.artists)
+    new = sum(1 for a in counter if a not in before)
+    console.print(
+        f"[cyan]📚 lexicon[/]: {len(lex.artists)} existing artist(s); "
+        f"{new} new, {len(counter) - new} already present."
+    )
+
+    if args.dry_run:
+        console.print("[bold cyan]🧪 Dry run — no changes written.[/]")
+        return 0
+
+    added = 0
+    bumped = 0
+    for artist, count in counter.items():
+        lex.add_artist(artist, count=max(count, args.min_count))
+        if artist in before:
+            bumped += 1
+        else:
+            added += 1
+
+    try:
+        lex.save(args.lexicon)
+    except OSError as exc:
+        console.print(f"[bold red]❌ could not save lexicon:[/] {exc}")
+        return 1
+    console.print(
+        f"[green]✅ imported[/] — {added} new, {bumped} bumped. "
+        f"Lexicon now holds {len(lex.artists)} artist(s)."
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(sys.argv[1:] if argv is None else argv)
+    raw = sys.argv[1:] if argv is None else argv
+    if raw and raw[0] == "lexicon":
+        return _lexicon_command(raw[1:])
+    args = _parse_args(raw)
     mode = _mode(args)
 
     if not args.no_banner:

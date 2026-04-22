@@ -147,6 +147,34 @@ If the animated scan panel misrenders in your terminal (e.g. panels duplicating
 in scrollback over ssh / tmux / some emulators), pass `--plain` to fall back to
 a simple one-line progress bar.
 
+## Artist & venue lexicon
+
+Alongside the history file, TagCleaner keeps a `tagcleaner-lexicon.json` — a
+count of every artist and venue it has successfully parsed. The parser uses
+it two ways:
+
+- **Parent-folder fallback.** When a concert folder's name is purely a date
+  (`1969-12-17 Chestnut Cabaret/`), the parser walks up the ancestor chain
+  asking the lexicon whether any ancestor names a known artist
+  (`/Tapes/Black Sabbath/1969-12-17…/`).
+- **Spelling canonicalisation.** `talking heads`, `Talking Heads`, and
+  `The Talking Heads` get folded under whichever spelling is most common.
+
+Two flags feed it:
+
+```bash
+# Ask interactively for artists the parser couldn't resolve. Answers go
+# straight into the lexicon, so the next run doesn't re-ask.
+tagcleaner /mnt/music/concerts --prompt-unknown
+
+# Bootstrap the lexicon from a studio-release library (one folder per album).
+tagcleaner lexicon import /mnt/music/qobuz --lexicon /mnt/music/concerts/tagcleaner-lexicon.json
+```
+
+`lexicon import` is handy for seeding the lexicon with the 2–4k artists in
+your studio collection before letting it loose on a larger bootleg library —
+fewer prompts, fewer wrong-guess no-ops.
+
 ## Enrich with setlist.fm (optional)
 
 If a folder is missing venue/city/setlist information, TagCleaner can query
