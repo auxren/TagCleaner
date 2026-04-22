@@ -344,7 +344,7 @@ def _prompt_for_group(parent: Path, siblings: list[Concert]) -> str | None:
     """
     if len(siblings) == 1:
         c = siblings[0]
-        console.print(f"[bold]{c.folder.name}[/]")
+        console.print(f"[bold]{c.folder}[/]")
         details: list[str] = []
         if c.date: details.append(f"date {c.date}")
         if c.venue: details.append(f"venue {c.venue}")
@@ -352,15 +352,21 @@ def _prompt_for_group(parent: Path, siblings: list[Concert]) -> str | None:
         if c.tracks: details.append(f"{len(c.tracks)} tracks")
         if details:
             console.print(f"  [bright_black]{', '.join(details)}[/]")
+        for a in c.audio_files[:3]:
+            console.print(f"  [bright_black]· {a.name}[/]")
+        if len(c.audio_files) > 3:
+            console.print(f"  [bright_black]  ... and {len(c.audio_files) - 3} more file(s)[/]")
     else:
         console.print(
-            f"[bold]{parent.name}/[/] "
+            f"[bold]{parent}/[/] "
             f"[bright_black]({len(siblings)} concerts)[/]"
         )
-        for c in siblings[:4]:
-            console.print(f"  [bright_black]- {c.folder.name}[/]")
-        if len(siblings) > 4:
-            console.print(f"  [bright_black]  ... and {len(siblings) - 4} more[/]")
+        for c in siblings[:6]:
+            sample = c.audio_files[0].name if c.audio_files else ""
+            extra = f"  [dim]· {sample}[/]" if sample else ""
+            console.print(f"  [bright_black]- {c.folder.name}[/]{extra}")
+        if len(siblings) > 6:
+            console.print(f"  [bright_black]  ... and {len(siblings) - 6} more[/]")
     try:
         ans = input("artist > ").strip()
     except (EOFError, KeyboardInterrupt):
