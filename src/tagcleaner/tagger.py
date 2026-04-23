@@ -10,6 +10,10 @@ from mutagen.flac import FLAC
 from mutagen.easyid3 import EasyID3
 from mutagen.id3 import ID3, TALB, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK
 from mutagen.mp3 import MP3
+from mutagen import File as MutagenFile
+from mutagen.mp4 import MP4
+from mutagen.oggvorbis import OggVorbis
+from mutagen.oggopus import OggOpus
 from mutagen.wave import WAVE
 
 from .models import Concert
@@ -274,7 +278,102 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool]:
                 del audio.tags["TPOS"]
         audio.save()
         return True, False
+    if ext == ".m4a" or ext == ".m4b":
+        audio = MP4(str(plan.dest))
+        if audio.tags is None:
+            audio.add_tags()
+        view = _Mp4View(audio.tags)
+        if _is_already_tagged(plan, view):
+            if _existing_album(view) == plan.album:
+                return False, True
+            audio.tags["\xa9alb"] = [plan.album]
+            audio.save()
+            return True, True
+        audio.tags["\xa9ART"] = [plan.artist]
+        audio.tags["aART"] = [plan.artist]
+        audio.tags["\xa9alb"] = [plan.album]
+        if plan.track is not None:
+            audio.tags["trkn"] = [(plan.track, 0)]
+        if not plan.minimal:
+            if plan.date:
+                audio.tags["\xa9day"] = [plan.date]
+            if plan.title is not None:
+                audio.tags["\xa9nam"] = [plan.title]
+            if plan.disc is not None and plan.disc_total is not None:
+                audio.tags["disk"] = [(plan.disc, plan.disc_total)]
+            elif plan.track is not None and "disk" in audio.tags:
+                del audio.tags["disk"]
+        audio.save()
+        return True, False
+    if ext in (".ogg", ".opus", ".oga"):
+        # .ogg can hold Vorbis or Opus (or FLAC) — let mutagen sniff it.
+        # All Ogg variants expose Vorbis comments via dict-style access.
+        audio = MutagenFile(str(plan.dest))
+        if audio is None or not isinstance(audio, (OggVorbis, OggOpus)):
+            raise RuntimeError(f"unsupported ogg variant for {plan.dest}")
+        if _is_already_tagged(plan, audio):
+            if _existing_album(audio) == plan.album:
+                return False, True
+            audio["ALBUM"] = plan.album
+            audio.save()
+            return True, True
+        audio["ARTIST"] = plan.artist
+        audio["ALBUMARTIST"] = plan.artist
+        audio["ALBUM"] = plan.album
+        if plan.track is not None:
+            audio["TRACKNUMBER"] = f"{plan.track:02d}"
+        if not plan.minimal:
+            if plan.date:
+                audio["DATE"] = plan.date
+            if plan.title is not None:
+                audio["TITLE"] = plan.title
+            if plan.disc is not None and plan.disc_total is not None:
+                audio["DISCNUMBER"] = str(plan.disc)
+                audio["DISCTOTAL"] = str(plan.disc_total)
+            elif plan.track is not None:
+                for k in ("DISCNUMBER", "DISCTOTAL"):
+                    if k in audio:
+                        del audio[k]
+        audio.save()
+        return True, False
     raise RuntimeError(f"unsupported audio format: {ext}")
+
+
+# MP4/iTunes atom name -> EasyID3-style aliases probed by _is_already_tagged.
+# Lets M4A files reuse the same already-tagged + existing-album checks.
+_MP4_ATOM_FOR_KEY = {
+    "ARTIST": "\xa9ART", "artist": "\xa9ART", "ARTISTS": "\xa9ART",
+    "ALBUMARTIST": "aART", "albumartist": "aART",
+    "ALBUM": "\xa9alb", "album": "\xa9alb",
+    "TRACKNUMBER": "trkn", "tracknumber": "trkn",
+    "DATE": "\xa9day", "date": "\xa9day",
+    "TITLE": "\xa9nam", "title": "\xa9nam",
+    "DISCNUMBER": "disk", "discnumber": "disk",
+}
+
+
+class _Mp4View:
+    """Dict-style read-only adapter exposing MP4 atoms under EasyID3-style
+    keys, so ``_is_already_tagged`` and ``_existing_album`` work uniformly
+    across FLAC, MP3, WAV, and M4A."""
+
+    __slots__ = ("_mp4",)
+
+    def __init__(self, mp4_tags) -> None:
+        self._mp4 = mp4_tags
+
+    def get(self, key: str, default=None):
+        atom = _MP4_ATOM_FOR_KEY.get(key)
+        if atom is None:
+            return default
+        v = self._mp4.get(atom)
+        if not v:
+            return default
+        # `trkn` is [(num, total)] tuples; `disk` similar. Stringify the first.
+        first = v[0]
+        if isinstance(first, tuple):
+            return [str(first[0])]
+        return [str(first)]
 
 
 # ID3 frame name -> the EasyID3-style aliases that _is_already_tagged probes.

@@ -32,6 +32,20 @@ def silent_wav() -> Path:
 
 
 @pytest.fixture
+def silent_m4a() -> Path:
+    src = FIXTURES / "silent.m4a"
+    assert src.exists(), f"missing fixture {src}"
+    return src
+
+
+@pytest.fixture
+def silent_ogg() -> Path:
+    src = FIXTURES / "silent.ogg"
+    assert src.exists(), f"missing fixture {src}"
+    return src
+
+
+@pytest.fixture
 def make_flac(tmp_path, silent_flac):
     """Factory: copy the silent FLAC fixture to *dest* and return the Path."""
 
@@ -58,6 +72,26 @@ def make_wav(tmp_path, silent_wav):
     def _make(dest: Path) -> Path:
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(silent_wav, dest)
+        return dest
+
+    return _make
+
+
+@pytest.fixture
+def make_m4a(tmp_path, silent_m4a):
+    def _make(dest: Path) -> Path:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(silent_m4a, dest)
+        return dest
+
+    return _make
+
+
+@pytest.fixture
+def make_ogg(tmp_path, silent_ogg):
+    def _make(dest: Path) -> Path:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(silent_ogg, dest)
         return dest
 
     return _make
