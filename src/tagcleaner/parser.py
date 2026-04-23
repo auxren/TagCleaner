@@ -716,6 +716,10 @@ def _lexicon_artist_from_parent(folder: Path, lexicon: Lexicon) -> str | None:
         if not name or name in (".", "/"):
             return None
         if name.lower() in _NOT_AN_ARTIST:
+            # "Various Artists" is a real artist tag for compilation albums —
+            # treat the wrapper as the artist instead of stopping the walk.
+            if name.lower() in ("various artists", "various"):
+                return "Various Artists"
             return None
         # Year-only or date-first wrappers ("1987/", "2003-12-17 Show") aren't
         # artists — skip them but keep walking to the next ancestor.
@@ -726,6 +730,102 @@ def _lexicon_artist_from_parent(folder: Path, lexicon: Lexicon) -> str | None:
             match = lexicon.match_artist(candidate)
             if match:
                 return match
+        current = current.parent
+    return None
+
+
+# Format/container wrapper names that we *skip past* when looking for a
+# trustworthy artist ancestor (vs. _NOT_AN_ARTIST which marks the library
+# root and terminates the walk).
+_FORMAT_ANCESTORS = frozenset({
+    "audio", "files", "recordings", "tracks", "music", "songs",
+    "flac", "flac files", "mp3", "wav", "shn", "shnf",
+    "cd", "cd1", "cd2", "cd3", "dvd", "disc", "disc 1", "disc 2",
+    "sbd", "aud",
+})
+
+
+def _trust_parent_artist(folder: Path) -> str | None:
+    """Walk up the ancestors to find a clean artist-shape name when the
+    lexicon couldn't confirm one.
+
+    Catches two cases:
+      * brand-new ``Tapes/Artist/Show/`` libraries where the artist has zero
+        prior history (e.g. ``Oysterhead``, ``Frank Sinatra``);
+      * deep ``Show/Show/Audio/CD1`` wrappers where the artist sits 3+ levels
+        up — we skip format containers (Audio, FLAC) and walk further.
+
+    For each ancestor we try the bare name and the ``_ancestor_candidates``
+    splits (so ``"Eric Clapton and Dr. John - 1996-01-13 - London"`` yields
+    ``"Eric Clapton and Dr. John"``).
+    """
+    current = folder.parent
+    for _ in range(_ANCESTOR_DEPTH):
+        if current is None or current == current.parent:
+            return None
+        name = current.name
+        if not name or name in (".", "/"):
+            return None
+        nlow = name.lower()
+        # Format containers — skip past them (checked before _NOT_AN_ARTIST
+        # because "flac"/"audio" appear in both sets).
+        if nlow in _FORMAT_ANCESTORS:
+            current = current.parent
+            continue
+        if nlow in _NOT_AN_ARTIST:
+            if nlow in ("various artists", "various"):
+                return "Various Artists"
+            return None
+        if name.startswith(("[", "(", "_", ".")):
+            return None
+        if YEAR_ONLY.fullmatch(name.strip()) or _first_date_position(name) == 0:
+            current = current.parent
+            continue
+        # When the name has a " - " separator, only trust the head if what
+        # follows looks like a date (`Artist - 1996-01-13 - Venue` pattern).
+        # `Cajun - Zydeco` (no date in tail) means this is a category folder
+        # and we should walk up to find a real artist ancestor.
+        if " - " in name:
+            head, rest = name.split(" - ", 1)
+            head = head.strip()
+            if rest and (YEAR_ONLY.search(rest[:30]) or _first_date_position(rest) is not None):
+                if (2 <= len(head) <= 60
+                        and re.match(r"^[A-Za-z0-9]", head)
+                        and not YEAR_ONLY.search(head)):
+                    return head
+            current = current.parent
+            continue
+        # Bare clean name — but if it embeds a year, try to cut the artist
+        # off the front ("BHIC 1998.08.08 Camden ..." -> "BHIC",
+        # "Black_Sabbath_1974-02-21" -> "Black_Sabbath"). Use the same
+        # cut-at-year/cut-at-hyphen logic as the lexicon walk.
+        if YEAR_ONLY.search(name):
+            # Try _ancestor_candidates' splits first.
+            for candidate in _ancestor_candidates(name):
+                cand = candidate.strip(" -,_([{")
+                if not cand or cand == name or " - " in cand:
+                    continue
+                if YEAR_ONLY.search(cand):
+                    continue
+                if not re.match(r"^[A-Za-z0-9]", cand):
+                    continue
+                if 2 <= len(cand) <= 60:
+                    return cand
+            # Fallback: cut at the year position even when preceded by `_`
+            # (which `_ancestor_candidates`' \b boundary doesn't catch — e.g.
+            # "Black_Sabbath_1974-02-21").
+            m = re.search(r"(?<!\d)(?:19|20)\d{2}(?!\d)", name)
+            if m:
+                head = name[: m.start()].strip(" -_,.()[]")
+                if (head and " - " not in head and 2 <= len(head) <= 60
+                        and re.match(r"^[A-Za-z0-9]", head)):
+                    return head
+            current = current.parent
+            continue
+        if not re.match(r"^[A-Za-z0-9]", name):
+            return None
+        if 2 <= len(name) <= 60:
+            return name
         current = current.parent
     return None
 
@@ -812,6 +912,8 @@ def build_concert(
             match = lexicon.match_venue(venue)
             if match:
                 venue = match
+    if not artist:
+        artist = _trust_parent_artist(folder)
 
     source = detect_source(folder_name, filenames, body)
 
