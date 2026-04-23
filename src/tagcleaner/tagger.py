@@ -8,7 +8,9 @@ from pathlib import Path
 
 from mutagen.flac import FLAC
 from mutagen.easyid3 import EasyID3
+from mutagen.id3 import ID3, TALB, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK
 from mutagen.mp3 import MP3
+from mutagen.wave import WAVE
 
 from .models import Concert
 
@@ -245,4 +247,66 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool]:
                 audio["discnumber"] = f"{plan.disc}/{plan.disc_total}"
         audio.save()
         return True, False
+    if ext in (".wav", ".wave"):
+        audio = WAVE(str(plan.dest))
+        if audio.tags is None:
+            audio.add_tags()
+        view = _Id3View(audio.tags)
+        if _is_already_tagged(plan, view):
+            if _existing_album(view) == plan.album:
+                return False, True
+            audio.tags["TALB"] = TALB(encoding=3, text=plan.album)
+            audio.save()
+            return True, True
+        audio.tags["TPE1"] = TPE1(encoding=3, text=plan.artist)
+        audio.tags["TPE2"] = TPE2(encoding=3, text=plan.artist)
+        audio.tags["TALB"] = TALB(encoding=3, text=plan.album)
+        if plan.track is not None:
+            audio.tags["TRCK"] = TRCK(encoding=3, text=f"{plan.track:02d}")
+        if not plan.minimal:
+            if plan.date:
+                audio.tags["TDRC"] = TDRC(encoding=3, text=plan.date)
+            if plan.title is not None:
+                audio.tags["TIT2"] = TIT2(encoding=3, text=plan.title)
+            if plan.disc is not None and plan.disc_total is not None:
+                audio.tags["TPOS"] = TPOS(encoding=3, text=f"{plan.disc}/{plan.disc_total}")
+            elif plan.track is not None and "TPOS" in audio.tags:
+                del audio.tags["TPOS"]
+        audio.save()
+        return True, False
     raise RuntimeError(f"unsupported audio format: {ext}")
+
+
+# ID3 frame name -> the EasyID3-style aliases that _is_already_tagged probes.
+# Lets WAV files (which carry raw ID3 frames in their tags chunk) reuse the
+# same already-tagged + existing-album checks as FLAC and MP3.
+_ID3_FRAME_FOR_KEY = {
+    "ARTIST": "TPE1", "artist": "TPE1",
+    "ARTISTS": "TPE1", "ALBUMARTIST": "TPE2", "albumartist": "TPE2",
+    "ALBUM": "TALB", "album": "TALB",
+    "TRACKNUMBER": "TRCK", "tracknumber": "TRCK",
+    "DATE": "TDRC", "date": "TDRC",
+    "TITLE": "TIT2", "title": "TIT2",
+    "DISCNUMBER": "TPOS", "discnumber": "TPOS",
+    "DISCTOTAL": "TPOS",
+}
+
+
+class _Id3View:
+    """Tiny dict-style read-only adapter exposing ID3 frames under
+    EasyID3/Vorbis-style keys, so ``_is_already_tagged`` and
+    ``_existing_album`` work uniformly across FLAC, MP3, and WAV."""
+
+    __slots__ = ("_id3",)
+
+    def __init__(self, id3: ID3) -> None:
+        self._id3 = id3
+
+    def get(self, key: str, default=None):
+        frame_id = _ID3_FRAME_FOR_KEY.get(key)
+        if frame_id is None:
+            return default
+        frame = self._id3.get(frame_id)
+        if frame is None:
+            return default
+        return [str(t) for t in frame.text] if frame.text else default
