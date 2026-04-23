@@ -191,6 +191,60 @@ class TestApplyPlansMP3:
         assert tags["tracknumber"] == ["01"]
 
 
+class TestApplyPlansWAV:
+    """WAV files carry ID3 tags in a chunk inside the RIFF container; mutagen
+    reads/writes them through ``mutagen.wave.WAVE``. Tests confirm the same
+    ARTIST/ALBUM/TRACKNUMBER pipeline works as for FLAC and MP3."""
+
+    def test_writes_id3_to_wav(self, tmp_path: Path, make_wav):
+        from mutagen.wave import WAVE
+        folder = tmp_path / "show"
+        audio = make_wav(folder / "01.wav")
+        tracks = [Track(number=1, title="WAV Track")]
+        plans = build_plans(_concert(folder, [audio], tracks))
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert all(r.ok for r in results), [r.error for r in results]
+
+        tags = WAVE(str(audio)).tags
+        assert str(tags["TPE1"]) == "Test Artist"
+        assert str(tags["TPE2"]) == "Test Artist"
+        assert str(tags["TIT2"]) == "WAV Track"
+        assert str(tags["TRCK"]) == "01"
+
+    def test_uppercase_extension_handled(self, tmp_path: Path, make_wav):
+        from mutagen.wave import WAVE
+        folder = tmp_path / "show"
+        audio = make_wav(folder / "01.WAV")
+        plans = build_plans(_concert(folder, [audio], [Track(number=1, title="A")]))
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert all(r.ok for r in results), [r.error for r in results]
+        tags = WAVE(str(audio)).tags
+        assert str(tags["TPE1"]) == "Test Artist"
+
+    def test_already_tagged_only_rewrites_album(self, tmp_path: Path, make_wav):
+        from mutagen.wave import WAVE
+        from mutagen.id3 import TPE1, TPE2, TALB, TIT2, TRCK
+        folder = tmp_path / "show"
+        audio = make_wav(folder / "01.wav")
+        # Pre-tag the file with everything *except* the canonical album.
+        pre = WAVE(str(audio))
+        pre.add_tags()
+        pre.tags["TPE1"] = TPE1(encoding=3, text="Test Artist")
+        pre.tags["TPE2"] = TPE2(encoding=3, text="Test Artist")
+        pre.tags["TALB"] = TALB(encoding=3, text="Old Album")
+        pre.tags["TIT2"] = TIT2(encoding=3, text="A")
+        pre.tags["TRCK"] = TRCK(encoding=3, text="01")
+        pre.save()
+
+        plans = build_plans(_concert(folder, [audio], [Track(number=1, title="A")]))
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert all(r.ok for r in results), [r.error for r in results]
+        # The plan-built album wins; everything else stays (album-only update).
+        tags = WAVE(str(audio)).tags
+        assert str(tags["TALB"]) != "Old Album"
+        assert str(tags["TPE1"]) == "Test Artist"  # untouched
+
+
 class TestApplyPlansError:
     def test_missing_file_is_reported(self, tmp_path: Path, make_flac):
         folder = tmp_path / "show"
