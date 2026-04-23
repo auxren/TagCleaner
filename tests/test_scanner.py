@@ -11,6 +11,7 @@ from tagcleaner.scanner import (
     _enumerate_folder,
     _fingerprint,
     _is_multi_disc_parent,
+    _looks_like_unpack_wrapper,
     _parse_disc_marker,
     list_candidate_dirs,
     scan,
@@ -267,6 +268,65 @@ class TestScan:
 
     def test_missing_root_returns_empty(self, tmp_path: Path):
         assert scan(tmp_path / "no-such-dir") == []
+
+
+class TestLooksLikeUnpackWrapper:
+    """Wrapper detection used by ``list_candidate_dirs`` to decide whether
+    ``outer/inner/*.flac`` is an etree-style archive unpack (collapse to
+    outer) or a real ``Artist/Show`` container (descend into inner)."""
+
+    @pytest.mark.parametrize("outer,inner", [
+        # Exact name dup — classic etree unpack.
+        ("gd1987-08-22.sbd", "gd1987-08-22.sbd"),
+        # Format/quality suffix tails.
+        ("Some Show 1985", "Some Show 1985 FLAC"),
+        ("BigShow", "BigShow_24bit"),
+        ("BigShow", "BigShow 24bit 96khz"),
+        ("BigShow", "BigShow FLAC 24bit"),
+        ("BigShow", "BigShow Lossless"),
+        # Inner is a bare format-bucket name.
+        ("Concert", "FLAC"),
+        ("Concert", "Audio"),
+    ])
+    def test_collapses_real_wrappers(self, outer: str, inner: str):
+        assert _looks_like_unpack_wrapper(outer, inner) is True
+
+    @pytest.mark.parametrize("outer,inner", [
+        # Artist-folder containers — must descend, not collapse.
+        ("Aphex Twin", "Aphex Twin - Live @ Big Day Out Festival, Australia, 18-01-2004"),
+        ("Brian Auger", "Brian Auger 1968-1972 Absolutely Live"),
+        ("Roxy Music", "Roxy Music - May 15, 1983 Cobo Arena Detroit"),
+        ("Stevie Nicks", "Stevie Nicks- Fleetwood Mac Compilation"),
+        ("Mahalo Dead", "Mahalo Dead 2024-11-24 Porter Pavilion.f16f"),
+        ("Hooteroll", "Hooteroll_ Plus! - 04_07_17 The Capitol Theatre"),
+        ("All Them Witches", "All Them Witches - 09_06_18 Some Show"),
+        # Date-suffix tails (yy-mm-dd) must NOT look like format tokens —
+        # earlier versions accidentally accepted "78-04-08" because the
+        # \d{2,4} alternative was too permissive.
+        ("Benny Goodman", "Benny Goodman 78-04-08"),
+        ("Dixie Dregs", "Dixie Dregs 79-06-17"),
+        ("Jaco Pastorius", "Jaco Pastorius 81-12-01"),
+        ("Ella Fitzgerald", "Ella Fitzgerald 73-07-05"),
+        # Outer too short to safely prefix-match.
+        ("foo", "foobar"),
+    ])
+    def test_keeps_real_artist_folders(self, outer: str, inner: str):
+        assert _looks_like_unpack_wrapper(outer, inner) is False
+
+    def test_artist_wrapper_emits_inner_show_as_candidate(
+        self, tmp_path: Path, make_flac,
+    ):
+        """End-to-end: ``Tapes/Aphex Twin/Aphex Twin - Live @ Big Day Out/``
+        used to be collapsed to the outer (artist) folder, hiding the inner
+        show entirely. The fix descends so the inner show is a candidate
+        and the outer artist folder is not."""
+        artist = tmp_path / "Aphex Twin"
+        show = artist / "Aphex Twin - Live @ Big Day Out Festival, Australia, 18-01-2004"
+        show.mkdir(parents=True)
+        make_flac(show / "01 Big Day Out Festival.mp3")
+        names = sorted(p.name for p, _ in list_candidate_dirs(tmp_path))
+        assert show.name in names
+        assert artist.name not in names
 
 
 class TestMultiDiscSubfolders:

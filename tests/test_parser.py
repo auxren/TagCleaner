@@ -5,10 +5,13 @@ from pathlib import Path
 
 import pytest
 
+from tagcleaner.lexicon import Lexicon
 from tagcleaner.parser import (
     _city_from_folder,
     _finalize_tracks,
+    _lexicon_artist_from_parent,
     _split_venue_city_region,
+    _trust_parent_artist,
     build_concert,
     guess_artist_from_folder,
     parse_date,
@@ -536,3 +539,84 @@ class TestBuildConcertIntegration:
         audio = [make_flac(folder / "01 something.flac")]
         c = build_concert(folder, audio, None)
         assert "no setlist found" in c.issues
+
+
+class TestTrustParentArtist:
+    """Last-resort artist fallback that walks the ancestor chain looking for
+    a clean artist-shape folder name. Catches two real-world gaps:
+
+    * brand-new ``Tapes/Artist/Show/`` libraries where the artist has zero
+      prior history (so the lexicon walk can't confirm it);
+    * deeply-nested ``Show/Show/Audio/CD1`` wrappers where the artist sits
+      3+ levels above the concert folder.
+
+    The function operates on ``Path`` objects only — it does not touch the
+    filesystem, so tests can construct synthetic paths."""
+
+    @pytest.mark.parametrize("path,expected", [
+        # Brand-new artist folder: parent name IS the artist, lexicon empty.
+        ("/Tapes/Oysterhead/2001-11-04 Hill Auditorium - Ann Arbor MI", "Oysterhead"),
+        ("/Tapes/Frank Sinatra/1968-05-22 Oakland Coliseum", "Frank Sinatra"),
+        # Deep wrapper: format containers are skipped past, not stopped at.
+        ("/Tapes/Eric Clapton and Dr. John - 1996-01-13 - London/"
+         "Eric Clapton and Dr. John - 1996-01-13 - London/Audio",
+         "Eric Clapton and Dr. John"),
+        ("/Tapes/Jeff Lynne's ELO - 3 Arena Dublin 25 October 2018/"
+         "Jeff Lynne's ELO - 3 Arena Dublin 25 October 2018/flac files",
+         "Jeff Lynne's ELO"),
+        ("/Tapes/John Hammond/John Hammond- 1986-01-22 Nightstage, MA/FLAC/Acoustic Set",
+         "John Hammond"),
+        # Year-embedded ancestor names — cut at the year (handles both `\b`
+        # boundary cases AND underscore-separated forms like "Black_Sabbath_1974").
+        ("/Tapes/BHIC 1998.08.08 Camden (audience) [FLAC]/08.08.1998 Camden - Acoustic",
+         "BHIC"),
+        ("/Tapes/Black_Sabbath_1974-02-21/1974-02-01 Civic Arena, Pittsburgh, PA",
+         "Black_Sabbath"),
+        # `Various Artists` is recognised even though it lives in the
+        # NOT_AN_ARTIST set (so the lexicon walk would normally stop).
+        ("/Tapes/Various Artists/Cajun - Zydeco/Some Show", "Various Artists"),
+    ])
+    def test_recovers_artist_from_ancestor(self, path: str, expected: str):
+        assert _trust_parent_artist(Path(path)) == expected
+
+    @pytest.mark.parametrize("path", [
+        # Date-prefixed parent — not an artist, walk up. Then "Tapes" is
+        # NOT_AN_ARTIST so we stop with no answer.
+        "/Tapes/2025_11_16_and_17_Bill_Graham_Civic_FLAC_Tagged/"
+        "2025-11-16 Bill Graham Civic Auditorium, San Francisco, CA",
+        # Bracketed/underscore-prefixed parent disqualifies.
+        "/Tapes/[Unknown Album]/01 - Track01.flac",
+        # Library-root word stops the walk.
+        "/Tapes/2001-11-04 Hill Auditorium - Ann Arbor MI",
+    ])
+    def test_returns_none_when_no_clean_ancestor(self, path: str):
+        assert _trust_parent_artist(Path(path)) is None
+
+
+class TestLexiconArtistFromParent:
+    """The ``_lexicon_artist_from_parent`` walk consults the lexicon at each
+    ancestor. ``Various Artists`` is special-cased so a folder under
+    ``Tapes/Various Artists/Concert For Amnesty/<show>/`` gets that label
+    instead of stopping the walk on the NOT_AN_ARTIST hit."""
+
+    def test_various_artists_ancestor_returns_label(self, tmp_path: Path):
+        show = tmp_path / "Various Artists" / "Concert For Amnesty" / "Bob Geldof Set"
+        show.mkdir(parents=True)
+        # Empty lexicon — Various Artists recognition shouldn't depend on it.
+        lex = Lexicon()
+        assert _lexicon_artist_from_parent(show, lex) == "Various Artists"
+
+    def test_known_artist_via_lexicon_match(self, tmp_path: Path):
+        show = tmp_path / "Phil Lesh & Friends" / "1999-04-15 Warfield SF"
+        show.mkdir(parents=True)
+        lex = Lexicon()
+        # Add to lexicon twice so it clears DEFAULT_MIN_COUNT=2.
+        lex.add_artist("Phil Lesh & Friends")
+        lex.add_artist("Phil Lesh & Friends")
+        assert _lexicon_artist_from_parent(show, lex) == "Phil Lesh & Friends"
+
+    def test_unknown_artist_returns_none(self, tmp_path: Path):
+        show = tmp_path / "Some Brand New Artist" / "1999-04-15 Warfield SF"
+        show.mkdir(parents=True)
+        lex = Lexicon()
+        assert _lexicon_artist_from_parent(show, lex) is None
