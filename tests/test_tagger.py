@@ -245,6 +245,70 @@ class TestApplyPlansWAV:
         assert str(tags["TPE1"]) == "Test Artist"  # untouched
 
 
+class TestApplyPlansM4A:
+    """M4A files use MP4 atom names (\\xa9ART, \\xa9alb, trkn, ...). Tests
+    confirm the same ARTIST/ALBUM/TRACKNUMBER pipeline writes them
+    correctly via mutagen.mp4.MP4."""
+
+    def test_writes_atoms_to_m4a(self, tmp_path: Path, make_m4a):
+        from mutagen.mp4 import MP4
+        folder = tmp_path / "show"
+        audio = make_m4a(folder / "01.m4a")
+        tracks = [Track(number=1, title="M4A Track")]
+        plans = build_plans(_concert(folder, [audio], tracks))
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert all(r.ok for r in results), [r.error for r in results]
+
+        tags = MP4(str(audio)).tags
+        assert tags["\xa9ART"] == ["Test Artist"]
+        assert tags["aART"] == ["Test Artist"]
+        assert tags["\xa9nam"] == ["M4A Track"]
+        assert tags["trkn"] == [(1, 0)]
+
+    def test_already_tagged_only_rewrites_album(self, tmp_path: Path, make_m4a):
+        from mutagen.mp4 import MP4
+        folder = tmp_path / "show"
+        audio = make_m4a(folder / "01.m4a")
+        # Pre-tag everything except canonical album. Fixture may already
+        # carry an encoder atom from ffmpeg, so don't call add_tags.
+        pre = MP4(str(audio))
+        if pre.tags is None:
+            pre.add_tags()
+        pre.tags["\xa9ART"] = ["Test Artist"]
+        pre.tags["aART"] = ["Test Artist"]
+        pre.tags["\xa9alb"] = ["Old Album"]
+        pre.tags["\xa9nam"] = ["A"]
+        pre.tags["trkn"] = [(1, 0)]
+        pre.save()
+
+        plans = build_plans(_concert(folder, [audio], [Track(number=1, title="A")]))
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert all(r.ok for r in results), [r.error for r in results]
+        tags = MP4(str(audio)).tags
+        assert tags["\xa9alb"] != ["Old Album"]
+        assert tags["\xa9ART"] == ["Test Artist"]
+
+
+class TestApplyPlansOgg:
+    """Ogg containers can hold Vorbis or Opus (or others). Tests use a
+    silent Opus fixture; mutagen auto-detects via mutagen.File()."""
+
+    def test_writes_vorbis_comments_to_ogg(self, tmp_path: Path, make_ogg):
+        from mutagen import File as MutagenFile
+        folder = tmp_path / "show"
+        audio = make_ogg(folder / "01.ogg")
+        tracks = [Track(number=1, title="OGG Track")]
+        plans = build_plans(_concert(folder, [audio], tracks))
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert all(r.ok for r in results), [r.error for r in results]
+
+        tags = MutagenFile(str(audio))
+        assert tags["ARTIST"] == ["Test Artist"]
+        assert tags["ALBUMARTIST"] == ["Test Artist"]
+        assert tags["TITLE"] == ["OGG Track"]
+        assert tags["TRACKNUMBER"] == ["01"]
+
+
 class TestApplyPlansError:
     def test_missing_file_is_reported(self, tmp_path: Path, make_flac):
         folder = tmp_path / "show"
