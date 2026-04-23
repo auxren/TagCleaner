@@ -195,17 +195,20 @@ class TestParserIntegration:
         concert = build_concert(show, [show / "01.flac"], None, lexicon=lex)
         assert concert.artist == "Black Sabbath"
 
-    def test_parent_folder_fallback_requires_lexicon_confirmation(
+    def test_parent_folder_fallback_uses_parent_trust_when_lexicon_misses(
         self, tmp_path: Path, make_flac,
     ):
-        # Same layout, but the lexicon has no entry for the parent name.
+        # Lexicon has no entry for the parent name, so the lexicon walk
+        # returns nothing — but the parent-trust fallback (added to support
+        # brand-new Tapes/Artist/Show/ libraries) still adopts the clean
+        # parent name as the artist.
         parent = tmp_path / "Some Random Folder"
         show = parent / "1969-12-17 Show"
         make_flac(show / "01.flac")
         lex = Lexicon(artists={"Other Band": 10})
 
         concert = build_concert(show, [show / "01.flac"], None, lexicon=lex)
-        assert concert.artist is None
+        assert concert.artist == "Some Random Folder"
 
     def test_parent_rejects_non_artist_names(
         self, tmp_path: Path, make_flac,
@@ -221,7 +224,12 @@ class TestParserIntegration:
         assert concert.artist is None
 
     def test_parent_rejects_year_only(self, tmp_path: Path, make_flac):
-        parent = tmp_path / "1987"
+        # "1987" is a year-only ancestor — both the lexicon walk and the
+        # parent-trust fallback skip past it. Wrap with a "Tapes" library
+        # root so the upward walk terminates with no other artist-shaped
+        # ancestor to adopt.
+        root = tmp_path / "Tapes"
+        parent = root / "1987"
         show = parent / "1987-12-17 Show"
         make_flac(show / "01.flac")
         lex = Lexicon(artists={"1987": 10})
@@ -256,13 +264,16 @@ class TestParserIntegration:
         concert = build_concert(show, [show / "01.flac"], info, lexicon=lex)
         assert concert.venue == "Madison Square Garden"
 
-    def test_no_lexicon_means_no_change(self, tmp_path: Path, make_flac):
+    def test_no_lexicon_still_uses_parent_trust(self, tmp_path: Path, make_flac):
+        # When lexicon is None the lexicon parent-walk is skipped, but the
+        # parent-trust fallback still runs unconditionally — it adopts the
+        # clean "Black Sabbath" parent name as the artist.
         parent = tmp_path / "Black Sabbath"
         show = parent / "1969-12-17 Show"
         make_flac(show / "01.flac")
 
         concert = build_concert(show, [show / "01.flac"], None, lexicon=None)
-        assert concert.artist is None
+        assert concert.artist == "Black Sabbath"
 
     def test_walks_grandparent_when_parent_is_box(
         self, tmp_path: Path, make_flac,
