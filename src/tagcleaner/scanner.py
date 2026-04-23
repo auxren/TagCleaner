@@ -68,6 +68,21 @@ _FORMAT_WRAPPER_NAMES = frozenset({
     "cd", "single cd", "compact disc",
 })
 
+# Token shapes that appear as part of a format/quality wrapper suffix:
+# "flac", "16bit", "24bit", "44.1khz", "96khz", "lossless". Used by
+# _looks_like_unpack_wrapper to recognise multi-word format tails like
+# "Concert FLAC 24bit 96khz". Deliberately conservative — anything that
+# could plausibly be a date, year, venue code, or show number is excluded
+# (e.g. bare "78", "04", "08" must NOT match, or an artist folder named
+# "Benny Goodman/Benny Goodman 78-04-08" gets miscollapsed).
+_QUALITY_TOKEN_RE = re.compile(
+    r"^(?:flac\d*|mp3|wav|shn|shnf|"
+    r"\d{1,2}bit|\d{2,3}(?:\.\d)?khz|"
+    r"hd|hires|hi-res|lossless|"
+    r"audio|files|music|tracks|songs|cd|disc)$",
+    re.I,
+)
+
 # Trailing disc-index suffix used by _shared_prefix_disc_set to recognise
 # sets like "BOOKER T 1" / "BOOKER T 2" or bare "1" / "2".
 _PREFIX_DISC_SUFFIX_RE = re.compile(
@@ -309,7 +324,21 @@ def _looks_like_unpack_wrapper(outer: str, inner: str) -> bool:
     if i in _FORMAT_WRAPPER_NAMES:
         return True
     shorter, longer = (o, i) if len(o) <= len(i) else (i, o)
-    return len(shorter) >= 6 and longer.startswith(shorter)
+    if len(shorter) < 6 or not longer.startswith(shorter):
+        return False
+    # The inner extends the outer name. Only collapse when the extension is a
+    # format/quality marker (Concert/Concert FLAC, Show/Show 24bit), not
+    # substantive content (Artist/Artist - 1985 Show, Artist/Artist 2024-11-24
+    # Venue) — those are artist-folder containers we need to descend into.
+    tail = longer[len(shorter):].strip(" -_.()[]{}").lower()
+    if not tail:
+        return True
+    if tail in _FORMAT_WRAPPER_NAMES:
+        return True
+    # Accept tails composed entirely of format/quality tokens like
+    # "24bit", "16-44", "FLAC 24bit", "lossless 96khz". Reject anything
+    # with substantive words (live, tour, year, venue, etc.).
+    return all(_QUALITY_TOKEN_RE.fullmatch(tok) for tok in re.split(r"[\s\-_]+", tail) if tok)
 
 
 def scan(
