@@ -74,6 +74,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Do not read or write the history file.")
     p.add_argument("--rescan-all", action="store_true",
                    help="Ignore history for this run (force re-parse of every folder).")
+    p.add_argument("--exclude", action="append", default=[], metavar="DIR",
+                   help="Skip subdirectories with this basename (case-insensitive). "
+                        "Repeatable. Useful for staging dirs like 'incomplete', "
+                        "'downloads', 'trash'.")
     p.add_argument("--lexicon", type=Path, metavar="FILE",
                    help=f"Artist/venue lexicon path (default: <path>/{LEXICON_FILENAME}).")
     p.add_argument("--no-lexicon", action="store_true",
@@ -160,6 +164,7 @@ def _scan_with_progress(
     rescan_all: bool,
     plain: bool = False,
     lexicon: Lexicon | None = None,
+    exclude: list[str] | None = None,
 ) -> tuple[list[tuple[Concert, str, float]], list[HistoryEntry]]:
     """Run scanner.scan() behind a progress UI.
 
@@ -194,14 +199,15 @@ def _scan_with_progress(
             return True
         return False
 
+    excl = exclude or []
     if plain:
-        fresh = _scan_plain(root, pre_skip=_pre_skip, skip=_skip, lexicon=lexicon)
+        fresh = _scan_plain(root, pre_skip=_pre_skip, skip=_skip, lexicon=lexicon, exclude=excl)
     else:
-        fresh = _scan_animated(root, pre_skip=_pre_skip, skip=_skip, lexicon=lexicon)
+        fresh = _scan_animated(root, pre_skip=_pre_skip, skip=_skip, lexicon=lexicon, exclude=excl)
     return fresh, skipped
 
 
-def _scan_animated(root, *, pre_skip, skip, lexicon=None):
+def _scan_animated(root, *, pre_skip, skip, lexicon=None, exclude=()):
     width = max(48, min((console.size.width or 80) - 8, 78))
     display = ScanDisplay(staff_width=width)
     with Live(display, console=console, refresh_per_second=12, transient=True):
@@ -213,10 +219,11 @@ def _scan_animated(root, *, pre_skip, skip, lexicon=None):
             on_skip=display.on_skip,
             on_done=lambda c, i, t: display.on_done(c),
             lexicon=lexicon,
+            exclude=exclude,
         )
 
 
-def _scan_plain(root, *, pre_skip, skip, lexicon=None):
+def _scan_plain(root, *, pre_skip, skip, lexicon=None, exclude=()):
     """Plain one-line Progress bar. Safer on terminals where the animated
     panel duplicates in scrollback."""
     progress = Progress(
@@ -246,6 +253,7 @@ def _scan_plain(root, *, pre_skip, skip, lexicon=None):
             on_folder=_on_folder,
             on_skip=_on_skip,
             lexicon=lexicon,
+            exclude=exclude,
         )
 
 
@@ -713,6 +721,7 @@ def main(argv: list[str] | None = None) -> int:
             rescan_all=args.rescan_all,
             plain=args.plain,
             lexicon=lexicon,
+            exclude=args.exclude,
         )
         concerts = [c for c, _fp, _mt in fresh]
         for concert, fp, mtime in fresh:

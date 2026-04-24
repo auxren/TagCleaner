@@ -676,3 +676,47 @@ class TestFingerprint:
     def test_folder_name_changes_fingerprint(self, tmp_path: Path):
         pairs = [(Path("01.flac"), 10)]
         assert _fingerprint("a", pairs, []) != _fingerprint("b", pairs, [])
+
+
+class TestExclude:
+    """list_candidate_dirs(exclude=...) skips matching directory basenames."""
+
+    def test_excludes_named_subdir(self, tmp_path: Path, make_flac):
+        # Layout: Tapes/Show1/01.flac, Tapes/incomplete/PartialShow/01.flac
+        for show in ("Show1",):
+            d = tmp_path / show
+            d.mkdir(); make_flac(d / "01.flac")
+        partial = tmp_path / "incomplete" / "PartialShow"
+        partial.mkdir(parents=True); make_flac(partial / "01.flac")
+
+        # Without exclude: both visible
+        names = sorted(p.name for p, _ in list_candidate_dirs(tmp_path))
+        assert "Show1" in names and "PartialShow" in names
+
+        # With exclude: incomplete subtree skipped entirely
+        names = sorted(p.name for p, _ in list_candidate_dirs(tmp_path, exclude=["incomplete"]))
+        assert "Show1" in names
+        assert "PartialShow" not in names
+
+    def test_exclude_is_case_insensitive(self, tmp_path: Path, make_flac):
+        d = tmp_path / "Trash" / "Show"
+        d.mkdir(parents=True); make_flac(d / "01.flac")
+        names = sorted(p.name for p, _ in list_candidate_dirs(tmp_path, exclude=["TRASH"]))
+        assert "Show" not in names
+
+    def test_exclude_does_not_affect_root_basename(self, tmp_path: Path, make_flac):
+        # If the user points the scan at a folder named "downloads", we still
+        # process it — exclude only filters DESCENDANTS, not the root itself.
+        root = tmp_path / "downloads"
+        root.mkdir()
+        show = root / "Show"
+        show.mkdir(); make_flac(show / "01.flac")
+        names = sorted(p.name for p, _ in list_candidate_dirs(root, exclude=["downloads"]))
+        assert "Show" in names
+
+    def test_empty_exclude_is_noop(self, tmp_path: Path, make_flac):
+        d = tmp_path / "Show"
+        d.mkdir(); make_flac(d / "01.flac")
+        a = sorted(p.name for p, _ in list_candidate_dirs(tmp_path))
+        b = sorted(p.name for p, _ in list_candidate_dirs(tmp_path, exclude=[]))
+        assert a == b
