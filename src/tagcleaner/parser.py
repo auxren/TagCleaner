@@ -188,6 +188,13 @@ TRACK_LINE = re.compile(
     r"^\s*(?:d\d+)?[ts]?(\d{1,3})(?:\s*[-.)_\s]\s*|:\s+)(.+?)\s*$", re.I,
 )
 
+# Vinyl side-letter tracks — ``A1 Title``, ``B-2 Title``, ``D5 Title``.
+# The side letter maps to a disc number (A=1, B=2, C=3, …). Caller treats
+# this as a supplementary form when TRACK_LINE misses.
+VINYL_TRACK_LINE = re.compile(
+    r"^\s*([A-H])\s*[-.]?\s*(\d{1,2})(?:\s*[-.)_\s]\s*|:\s+)(.+?)\s*$",
+)
+
 # Lines we treat as "not a track" even if they look like one:
 TRACK_SKIP = re.compile(
     r"^\s*\d+\.?\s*(?:md5|ffp|sha\d+|bytes?|samples?|kb|mb|gb)\b", re.I,
@@ -499,8 +506,15 @@ def _disc_from_marker(line: str) -> int | None:
 # Section headers that introduce an unnumbered setlist. After one of these
 # we accept subsequent non-noise non-blank lines as track titles until we
 # hit another disc marker or a line that's clearly not a title.
+#
+# The header line is permissive about trailing punctuation and stray words
+# so "Tracklist .", "Track List:", "Setlist:" all match. We require the
+# trigger word(s) to be the dominant content of the line, though — a bare
+# "Tracklist" in the middle of a sentence should not count.
 _SETLIST_HEADER_RE = re.compile(
-    r"^\s*(?:setlist|tracklist|tracks|songs|songlist)\s*[:.\-]?\s*$", re.I,
+    r"^\s*(?:set[\s-]*list|track[\s-]*list(?:ing)?|tracks|songs|songlist|"
+    r"playlist)\s*[:.\-]?\s*$",
+    re.I,
 )
 
 
@@ -561,6 +575,18 @@ def _setlist_pass(
             continue
         m = TRACK_LINE.match(line)
         if not m:
+            # Vinyl side-letter tracks — ``A1 Live Wire`` → disc A, track 1.
+            vm = VINYL_TRACK_LINE.match(line)
+            if vm:
+                side = vm.group(1).upper()
+                v_title = vm.group(3).strip().strip(":-").strip()
+                v_title = TRAILING_DURATION.sub("", v_title).strip()
+                if v_title and len(v_title) <= 200:
+                    v_disc = ord(side) - ord("A") + 1
+                    results.append((v_disc, v_title))
+                    saw_disc_marker = True
+                    current_disc = v_disc
+                continue
             if unnumbered_mode and _looks_like_unnumbered_title(line):
                 title = TRAILING_DURATION.sub("", line).strip()
                 if title and len(title) <= 200:

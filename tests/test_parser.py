@@ -839,6 +839,50 @@ class TestProseArtistFallsBackToParent:
         assert out.get("artist") != prose
 
 
+class TestVinylSetlist:
+    """Vinyl-bootleg info files use side-letter prefixes instead of track
+    numbers (``A1 Song``, ``B2 Other``, ``D5 Last``). Before this parser
+    pass they returned an empty setlist — covers ~100 AC/DC / Beatles /
+    Zeppelin vinyl-rip folders in the live library."""
+
+    def test_side_a_b_tracks_recognized(self):
+        body = (
+            "Tracklist\n"
+            "A1 Live Wire\n"
+            "A2 She's Got Balls\n"
+            "A3 Whole Lotta Rosie\n"
+            "B1 High Voltage\n"
+            "B2 Rocker\n"
+            "B3 Can I Sit Next To You Girl\n"
+        )
+        titles = [t for _, t in parse_setlist(body)]
+        assert titles == [
+            "Live Wire", "She's Got Balls", "Whole Lotta Rosie",
+            "High Voltage", "Rocker", "Can I Sit Next To You Girl",
+        ]
+
+    def test_vinyl_with_trailing_duration_stripped(self):
+        body = (
+            "Tracklist .\n"
+            "A1 She's Got Balls 7:02\n"
+            "A2 Show Business 4:56\n"
+        )
+        tracks = _finalize_tracks(parse_setlist(body))
+        assert [t.title for t in tracks] == ["She's Got Balls", "Show Business"]
+
+    def test_vinyl_sides_map_to_discs(self):
+        body = (
+            "A1 One\n"
+            "A2 Two\n"
+            "B1 Three\n"
+            "C1 Four\n"
+            "D1 Five\n"
+        )
+        tracks = _finalize_tracks(parse_setlist(body))
+        discs = [t.disc for t in tracks]
+        assert discs == [1, 1, 2, 3, 4]
+
+
 class TestUnnumberedSetlist:
     """Qango, Kiss Brussels, and similar European tape info files list
     tracks one per line without numbering. Recognise them when an
