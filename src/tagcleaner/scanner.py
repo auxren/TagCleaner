@@ -29,6 +29,21 @@ from .models import Concert
 AUDIO_EXTS = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav"}
 FINGERPRINT_EXT_HINTS = ("ffp", "md5", "sha", "shntool", "audiochecker", "sbeok")
 
+# Filename basenames (case-insensitive, with or without extension) that are
+# treated as info-source candidates even when not ending in .txt. Lets etree
+# folders that ship `info`, `notes`, `setlist`, `readme` (no extension) get
+# their setlist parsed.
+INFO_BASENAMES = frozenset({
+    "info", "notes", "setlist", "tracks", "readme", "tracklist",
+    "info.nfo", "info.info", "info.md", "notes.md",
+    "setlist.txt", "tracks.txt", "notes.txt", "readme.txt",
+})
+
+# File extensions also accepted as info source. .rtf comes from Mac TextEdit
+# defaulting to RTF when saving as .txt; .nfo/.info/.md show up from
+# different ripping toolchains.
+INFO_EXTS = frozenset({".txt", ".nfo", ".info", ".md", ".rtf"})
+
 # Disc-marker grammar shared by DISC_FOLDER_RE (whole-name) and
 # _DISC_TOKEN_RE (anywhere-in-name). Covers: 'Disc 1', 'CD 2', 'cd2', 'd1',
 # 'disc_02', 'Disc One', 'DVD 1', 'Set 1', 'Set II', '1st Set', 'first set',
@@ -495,7 +510,7 @@ def _classify(
                     ext = os.path.splitext(name)[1].lower()
                     if ext in AUDIO_EXTS:
                         audio.append((Path(entry.path), _entry_size(entry)))
-                    elif ext == ".txt":
+                    elif ext in INFO_EXTS or name.lower() in INFO_BASENAMES:
                         low = name.lower()
                         if any(h in low for h in FINGERPRINT_EXT_HINTS):
                             continue
