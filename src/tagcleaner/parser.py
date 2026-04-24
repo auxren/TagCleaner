@@ -311,6 +311,17 @@ def _clean_artist_candidate(text: str) -> str | None:
 
 
 def guess_artist_from_folder(folder_name: str) -> str | None:
+    """Strong first pass: only fires when the folder name has a clear
+    artist-before-date shape (``Talking Heads 1980-08-27 …``,
+    ``Grateful Dead - 1987-08-22 - Calaveras``) or a registered etree
+    prefix (``gd67-08-05``).
+
+    Deliberately does NOT try to salvage ``1969 Black Sabbath`` (artist
+    after a leading date) or bare ``All Them Witches`` folder names here —
+    those belong to :func:`weak_artist_from_folder`, which is consulted
+    only after the lexicon and parent-trust walks have had a chance to
+    provide a more trustworthy answer.
+    """
     art = _expand_artist_prefix(folder_name)
     if art:
         return art
@@ -323,6 +334,150 @@ def guess_artist_from_folder(folder_name: str) -> str | None:
     if pos is None or pos == 0:
         return None
     return _clean_artist_candidate(folder_name[:pos])
+
+
+def weak_artist_from_folder(folder_name: str) -> str | None:
+    """Last-resort artist extraction from the folder name alone.
+
+    Two shapes we handle:
+      * Artist AFTER a leading date (``1969 Black Sabbath``,
+        ``20150515 U2 Vancouver``): take the tail after the date.
+      * Folder name IS the artist (``All Them Witches``, ``Howard Jones``):
+        accept when the name has no numbers, no venue keywords, ≤5 words,
+        mostly-capitalised.
+
+    Called only when :func:`guess_artist_from_folder`, the lexicon walk,
+    and ``_trust_parent_artist`` all came up empty. Returns a candidate
+    that's better than nothing — still OK if it's wrong, since the
+    ``--prompt-unknown`` flow will ask the user anyway.
+    """
+    pos = _first_date_position(folder_name)
+    if pos == 0:
+        tail = _artist_after_leading_date(folder_name)
+        if tail:
+            return tail
+    if pos is None:
+        return _artist_from_bare_folder(folder_name)
+    return None
+
+
+def _first_date_match_end(text: str) -> int | None:
+    """Return the end position of the earliest date-like match in *text*,
+    or None if no date is found. Companion to ``_first_date_position``.
+    """
+    best_start: int | None = None
+    best_end: int | None = None
+    for pat in _DATE_FINDERS:
+        m = pat.search(text)
+        if m is None:
+            continue
+        if best_start is None or m.start() < best_start:
+            best_start, best_end = m.start(), m.end()
+    m = YEAR_ONLY.search(text)
+    if m is not None and (best_start is None or m.start() < best_start):
+        best_start, best_end = m.start(), m.end()
+    return best_end
+
+
+# Generic placeholder tokens that appear after a leading date and DO NOT
+# name an artist — "1999-01-01 Show A", "2001-05-05 Set 1", etc. Used
+# to suppress test-shaped or truly generic tails.
+_GENERIC_TAIL_TOKENS = frozenset({
+    "show", "set", "concert", "live", "audio", "recording", "recordings",
+    "tape", "tapes", "untitled", "unknown", "misc", "disc", "cd",
+})
+
+
+def _artist_after_leading_date(folder_name: str) -> str | None:
+    end = _first_date_match_end(folder_name)
+    if end is None:
+        return None
+    tail = folder_name[end:].strip(" -,_.()\t")
+    if not tail:
+        return None
+    # Stop at first ' - ' or ' (' (venue/annotation boundary). Same cut
+    # logic as _clean_artist_candidate.
+    head = re.split(r"\s+-\s+|\s+\(", tail, maxsplit=1)[0].strip(" -,_.()\t")
+    if not head:
+        return None
+    if _VENUE_KEYWORDS.search(head):
+        return None
+    if _MIC_PLACEMENT.search(head):
+        return None
+    # "Black Sabbath" or "The Strokes" — must start with a capital letter.
+    if not re.match(r"^[A-Z0-9]", head):
+        return None
+    if len(head) < 2 or len(head) > 60:
+        return None
+    if YEAR_ONLY.search(head):
+        return None
+    words = head.split()
+    # Reject generic placeholder shapes — "Show A", "Set 1", "Concert".
+    # If every word is either a single character OR one of the generic
+    # tokens, it's not a real artist name.
+    lower_words = [w.lower().rstrip(".,") for w in words]
+    if all(
+        w in _GENERIC_TAIL_TOKENS or (len(w) == 1 and not w.isdigit())
+        for w in lower_words
+    ):
+        return None
+    return head
+
+
+_US_STATE_SUFFIX = re.compile(
+    r"(?<!\w)(?:A[LKZR]|C[AOT]|D[CE]|FL|GA|HI|I[ADLN]|K[SY]|LA|"
+    r"M[ADEINOST]|N[CDEHJMVY]|O[HKR]|PA|RI|S[CD]|T[NX]|UT|V[AT]|"
+    r"W[AIVY])\.?\s*$",
+    re.I,
+)
+_CA_PROVINCE_SUFFIX = re.compile(
+    r"(?<!\w)(?:ON|QC|BC|AB|MB|SK|NS|NB|NL|PE|YT|NT|NU)\.?\s*$", re.I,
+)
+
+
+def _artist_from_bare_folder(folder_name: str) -> str | None:
+    """Return folder_name itself when it reads as a plausible artist name
+    and nothing else — otherwise None.
+
+    Real library shape: ``/Tapes/Howard Jones/`` with audio directly inside
+    is treated as a concert folder (no show subdirectory). The folder name
+    IS the artist. Guard against venue/prose folder names by rejecting any
+    name containing venue keywords, mic-placement jargon, digits, or more
+    than 5 words.
+    """
+    cleaned = folder_name.strip(" -,_.()[]")
+    if not cleaned or len(cleaned) < 2 or len(cleaned) > 60:
+        return None
+    if not re.match(r"^[A-Z]", cleaned):
+        return None
+    if re.search(r"\d", cleaned):
+        return None
+    # "Boston MA", "Dallas TX", "Toronto ON" are location strings, not artists.
+    if _US_STATE_SUFFIX.search(cleaned) or _CA_PROVINCE_SUFFIX.search(cleaned):
+        return None
+    if _VENUE_KEYWORDS.search(cleaned):
+        return None
+    if _MIC_PLACEMENT.search(cleaned):
+        return None
+    if _SOURCE_CODE_TOKEN.search(cleaned):
+        return None
+    # Quality/format tokens — "FLAC 24bit", "Master of Reality FLAC".
+    if re.search(r"\b(?:flac|mp3|wav|shn|24bit|16bit|lossless|master(?:ed)?)\b",
+                 cleaned, re.I):
+        return None
+    # "City, ST" or "City ST" shape — mostly venue/location strings.
+    if _looks_like_city(cleaned):
+        return None
+    # Must look like a short name (≤5 words) — prose gets longer.
+    words = cleaned.split()
+    if len(words) > 5:
+        return None
+    # At least half the words should start with a capital (band names are
+    # title-cased; "music" or "hottest live from exotic honolulu" fail).
+    caps = sum(1 for w in words if w[:1].isupper())
+    if caps / max(len(words), 1) < 0.5:
+        return None
+    return cleaned
 
 
 def _disc_from_marker(line: str) -> int | None:
@@ -1157,6 +1312,11 @@ def build_concert(
                 venue = match
     if not artist:
         artist = _trust_parent_artist(folder)
+    if not artist:
+        # Last-resort: folder name as a weak artist signal. Covers lone
+        # "Howard Jones" folders and "1969 Black Sabbath" leading-date
+        # shapes that the strong fallbacks can't handle.
+        artist = weak_artist_from_folder(folder_name)
 
     source = detect_source(folder_name, filenames, body)
 

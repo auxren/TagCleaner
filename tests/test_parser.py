@@ -18,6 +18,7 @@ from tagcleaner.parser import (
     parse_info_txt,
     parse_setlist,
     read_info_txt,
+    weak_artist_from_folder,
 )
 
 
@@ -95,6 +96,52 @@ class TestGuessArtist:
     ])
     def test_dateless_prefixes_return_none(self, folder: str):
         assert guess_artist_from_folder(folder) is None
+
+
+class TestWeakArtistFromFolder:
+    """Last-resort folder-name extraction. Only consulted in
+    ``build_concert`` after the lexicon walk and ``_trust_parent_artist``
+    have already come up empty — so returning the wrong answer is
+    acceptable, but returning a venue/prose string masquerading as an
+    artist is not (it pollutes the lexicon)."""
+
+    @pytest.mark.parametrize("folder,expected", [
+        # Artist living AFTER a leading year. ~47 folders in the live
+        # library have this shape.
+        ("1969 Black Sabbath", "Black Sabbath"),
+        ("1971 Nice FM", "Nice FM"),
+        ("20150515 U2 Vancouver", "U2 Vancouver"),
+        ("20120101 The Strokes", "The Strokes"),
+    ])
+    def test_artist_after_leading_date(self, folder: str, expected: str):
+        assert weak_artist_from_folder(folder) == expected
+
+    @pytest.mark.parametrize("folder,expected", [
+        # Folder name IS the artist — ~80 folders in the live library.
+        ("All Them Witches", "All Them Witches"),
+        ("Aphex Twin", "Aphex Twin"),
+        ("Benny Goodman", "Benny Goodman"),
+        ("Howard Jones", "Howard Jones"),
+        ("Billy Talent", "Billy Talent"),
+    ])
+    def test_bare_folder_name_as_artist(self, folder: str, expected: str):
+        assert weak_artist_from_folder(folder) == expected
+
+    @pytest.mark.parametrize("folder", [
+        # Venue/city names — don't treat as artist.
+        "Aragon Ballroom - Chicago",
+        "Boston MA",
+        "The Supper Club New York NY",
+        # Prose / description lines.
+        "music",
+        "Master of Reality FLAC 24bit",
+        # Shouldn't override stronger signals — "2007 10 12 I Camden NJ"
+        # has too much noise after the date to salvage an artist from.
+        "2007 10 12 I Camden NJ",
+    ])
+    def test_venue_or_prose_rejected(self, folder: str):
+        got = weak_artist_from_folder(folder)
+        assert got != folder, f"{folder!r} should not be returned verbatim"
 
 
 class TestSetlistParser:
@@ -577,6 +624,34 @@ class TestBuildConcertIntegration:
         info.write_text("Phish\n2000-01-01\n01. A\n02. B\n", encoding="utf-8")
         c = build_concert(folder, audio, info)
         assert any("track count mismatch" in issue for issue in c.issues)
+
+    def test_weak_folder_fallback_fires_when_no_other_signal(
+        self, tmp_path: Path, make_flac
+    ):
+        # Bare artist folder with audio directly inside, no info.txt.
+        # Wrap in "Tapes" so parent-trust stops at the library root and
+        # weak_artist_from_folder is the real last line of defence.
+        root = tmp_path / "Tapes"
+        root.mkdir()
+        folder = root / "Howard Jones"
+        folder.mkdir()
+        audio = [make_flac(folder / "01.flac"), make_flac(folder / "02.flac")]
+        c = build_concert(folder, audio, None)
+        assert c.artist == "Howard Jones"
+
+    def test_weak_fallback_not_preferred_over_parent_trust(
+        self, tmp_path: Path, make_flac
+    ):
+        # Parent is "Black Sabbath", leaf is "1969 Unknown Show" — the
+        # leading-date tail would yield "Unknown Show" but parent-trust
+        # should win with "Black Sabbath".
+        root = tmp_path / "Tapes"
+        root.mkdir()
+        folder = root / "Black Sabbath" / "1969 Unknown Show"
+        folder.mkdir(parents=True)
+        audio = [make_flac(folder / "01.flac")]
+        c = build_concert(folder, audio, None)
+        assert c.artist == "Black Sabbath"
 
     def test_no_setlist_issue(self, tmp_path: Path, make_flac):
         folder = tmp_path / "unknown 1999-05-05"
