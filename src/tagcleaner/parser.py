@@ -563,6 +563,11 @@ def _setlist_pass(
 
     def _emit_unnumbered(title: str) -> None:
         title = TRAILING_DURATION.sub("", title).strip()
+        # Strip "Track01" / "Track 1" / "Tr. 1" / "Tk 1" prefixes that
+        # tools like Traders Little Helper inject when auto-naming tracks.
+        title = re.sub(
+            r"^\s*(?:track|tr|tk)\s*\.?\s*\d{1,3}[\s._:\-]+", "", title, flags=re.I,
+        ).strip()
         if not title or len(title) > 200:
             return
         disc_val = current_disc
