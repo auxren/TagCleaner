@@ -1,0 +1,14 @@
+auCDtect: CD records authenticity detector, version 0.8.2
+Copyright (c) 2004 Oleg Berngardt. All rights reserved.
+Copyright (c) 2004 Alexander Djourik. All rights reserved.
+
+Detect mode (0..40 with 0 = most accurate):  8 (default)
+
+
+01 Heatseeker.wav:  track looks like CDDA with probability 100%.
+02 Shoot to Thrill.wav:  track looks like CDDA with probability 100%.
+03 Dirty Deeds Done Dirt Cheap.wav:  track looks like CDDA with probability 99%.
+04 Back in Black.wav:  track looks like CDDA with probability 99%.
+05 Who Made Who.wav:  track looks like CDDA with probability 100%.
+06 Jailbreak.wav:  track looks like CDDA with probability 100%.
+07 Hells Bells.wav:  track looks like CDDA with probability 100%.

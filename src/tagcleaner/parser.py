@@ -341,14 +341,47 @@ def _disc_from_marker(line: str) -> int | None:
     return _ROMAN.get(raw) or _WORDNUM.get(raw)
 
 
+# Section headers that introduce an unnumbered setlist. After one of these
+# we accept subsequent non-noise non-blank lines as track titles until we
+# hit another disc marker or a line that's clearly not a title.
+_SETLIST_HEADER_RE = re.compile(
+    r"^\s*(?:setlist|tracklist|tracks|songs|songlist)\s*[:.\-]?\s*$", re.I,
+)
+
+
 def parse_setlist(body: str) -> list[tuple[int | None, str]]:
     """Return list of (disc_number_or_None, track_title) in order.
-    Disc is None for single-disc shows; otherwise 1-based or -1 for Encore."""
+    Disc is None for single-disc shows; otherwise 1-based or -1 for Encore.
+
+    Two-pass strategy: first pass only accepts numbered tracks
+    (``01. Title`` / ``d1t05 Title`` / etc.). If that yields at least 3
+    tracks, we return those — the overwhelmingly common case. Only when
+    the numbered pass falls short AND we saw an explicit setlist / disc
+    marker do we run a second pass in unnumbered mode (Qango, Kiss
+    Brussels, older European bootleg conventions).
+    """
+    first, saw_trigger = _setlist_pass(body, allow_unnumbered=False)
+    if len(first) >= 3 or not saw_trigger:
+        return first
+    second, _ = _setlist_pass(body, allow_unnumbered=True)
+    return second if len(second) > len(first) else first
+
+
+def _setlist_pass(
+    body: str, *, allow_unnumbered: bool,
+) -> tuple[list[tuple[int | None, str]], bool]:
+    """Core setlist scanner. Returns ``(results, saw_trigger)`` where
+    *saw_trigger* is True if we encountered a disc marker or explicit
+    setlist header — the signal that unnumbered mode would be safe to
+    try on a second pass.
+    """
     lines = body.splitlines()
     current_disc: int | None = None
     results: list[tuple[int | None, str]] = []
     saw_disc_marker = False
     pending_encore = False
+    unnumbered_mode = False
+    saw_trigger = False
 
     for raw in lines:
         line = raw.strip()
@@ -359,29 +392,98 @@ def parse_setlist(body: str) -> list[tuple[int | None, str]]:
         disc = _disc_from_marker(line)
         if disc is not None:
             saw_disc_marker = True
+            saw_trigger = True
+            unnumbered_mode = allow_unnumbered
             if disc == -1:
                 pending_encore = True
             else:
                 current_disc = disc
                 pending_encore = False
             continue
+        if _SETLIST_HEADER_RE.match(line):
+            saw_trigger = True
+            unnumbered_mode = allow_unnumbered
+            continue
         m = TRACK_LINE.match(line)
         if not m:
+            if unnumbered_mode and _looks_like_unnumbered_title(line):
+                title = TRAILING_DURATION.sub("", line).strip()
+                if title and len(title) <= 200:
+                    disc_val = current_disc
+                    if pending_encore:
+                        disc_val = (current_disc or 1) + 1
+                    results.append(
+                        (disc_val if saw_disc_marker else None, title)
+                    )
             continue
         title = m.group(2).strip().strip(":-").strip()
-        # Strip trailing "  1:09" duration suffix common in etree info.txt
         title = TRAILING_DURATION.sub("", title).strip()
         if not title or len(title) > 200:
             continue
-        # Drop anything that's clearly a hash or md5 line
         if re.search(r"\b[a-f0-9]{16,}\b", title.lower()):
             continue
         disc_val = current_disc
         if pending_encore:
-            # Encore becomes current_disc+1 once we decide totals later
             disc_val = (current_disc or 1) + 1
         results.append((disc_val if saw_disc_marker else None, title))
-    return results
+    return results, saw_trigger
+
+
+def _looks_like_unnumbered_title(line: str) -> bool:
+    """True when *line* plausibly names a track in an unnumbered setlist.
+
+    Guards against picking up lineage lines, credit blocks, and prose that
+    sit mixed in with the tracks in some info.txt files. Keep the shape
+    restrictive — a false positive pollutes the track list with junk.
+    """
+    if len(line) < 3 or len(line) > 80:
+        return False
+    if _NOISE_FIRST_LINE.match(line):
+        return False
+    if _SENTENCE_OPENER.match(line):
+        return False
+    if _MIC_PLACEMENT.search(line):
+        return False
+    if _LINEAGE_CHAIN.search(line):
+        return False
+    if _SOURCE_CODE_TOKEN.search(line):
+        return False
+    if parse_date(line):
+        return False
+    if _EMBEDDED_DATE_SHAPE.search(line):
+        return False
+    # Must contain letters (not just punctuation / numbers).
+    if sum(ch.isalpha() for ch in line) < 2:
+        return False
+    # "Key: value" labelled lines are metadata, not titles.
+    if re.match(r"^[A-Za-z][A-Za-z ]{0,20}:\s", line):
+        return False
+    # Credit / personnel lines — "John Wetton - bass & lead vocals".
+    if re.search(r"\s-\s+(?:bass|drums|guitar|keyboards?|vocals|lead vocals|"
+                 r"percussion|piano|organ|saxophone|harmonica|violin|cello)\b",
+                 line, re.I):
+        return False
+    # Dense-digit lines (>30% digits) are stamps or IDs, not titles.
+    digits = sum(ch.isdigit() for ch in line)
+    if digits and digits / max(len(line), 1) > 0.3:
+        return False
+    # Quality / format metadata — "Bit / 96Khz HD Audio", "16/44.1 FLAC".
+    if re.search(
+        r"\b(?:kbps|khz|bit|hd\s+audio|16/44|24/96|lossless|"
+        r"flac|mp3|wav|shn|dvd-a|sacd)\b",
+        line, re.I,
+    ):
+        return False
+    # Self-referential section labels that sometimes appear inline
+    # ("Set List", "Setlist:", "Tracklisting:").
+    if _SETLIST_HEADER_RE.match(line):
+        return False
+    if re.match(
+        r"^\s*(?:set\s*list|tracklist(?:ing)?|playlist)\s*[:.\-]?\s*$",
+        line, re.I,
+    ):
+        return False
+    return True
 
 
 def read_info_txt(path: Path) -> str:
@@ -516,6 +618,12 @@ def parse_info_txt(body: str) -> dict:
         # and then get promoted to venue simply because they come first.
         if TRACK_LINE.match(ln):
             continue
+        # Reject prose sentences ("An interesting SB Taj solo..."): these
+        # have just enough structure (mixed case, commas) to fool
+        # _looks_like_venue, and we'd rather have a missing venue than a
+        # review sentence stamped into the album tag.
+        if _SENTENCE_OPENER.match(ln) or _looks_like_prose_artist(ln):
+            continue
         if "venue" not in data or "city" not in data:
             v, c, r = _split_venue_city_region(ln)
             if v and c and _looks_like_venue(v):
@@ -554,7 +662,13 @@ _SENTENCE_OPENER = re.compile(
     r"recorded|taped|taping|transferred|transfer\s+from|mastered|"
     r"dedicated|thanks|thank\s+you|please|note|the\s+following|"
     r"here\s+(?:is|are)|my\s+(?:cassette|tape|copy)|"
-    r"(?:all|most)\s+(?:song|track)s?)\b",
+    r"(?:all|most)\s+(?:song|track)s?|"
+    # "An interesting SB Taj solo", "A great show" — common opinion
+    # lines in taper notes. Match when "an/a" is followed by an adjective
+    # word class (descriptor before a noun).
+    r"an?\s+(?:interesting|excellent|incredible|amazing|great|wonderful|"
+    r"awesome|fantastic|beautiful|nice|good|decent|solid|killer|"
+    r"classic|rare|unique|special|legendary|superb|fine))\b",
     re.I,
 )
 
@@ -629,14 +743,28 @@ def _first_artist_line(nonblank: list[str]) -> str | None:
         if _NOISE_FIRST_LINE.match(line):
             continue
         if parse_date(line):
+            # Don't give up yet — rich taper headers pack "Artist, City,
+            # date, source" into one line. Try to salvage the artist token
+            # from before the first comma.
+            salvaged = _salvage_artist_before_comma(line)
+            if salvaged:
+                return salvaged
             continue
         if DISC_MARKER.search(line):
             break
         stripped = line.strip("*#=-_ \t")
         if not stripped:
             continue
+        # Track lines ("01. Sweet Home Chicago") are clearly not the artist,
+        # even if they're otherwise clean enough to pass every other filter.
+        if TRACK_LINE.match(stripped):
+            continue
         letters = sum(ch.isalpha() for ch in stripped)
         if letters < 2 or len(stripped) > 100:
+            # Too long to be a name, but might have a clean artist prefix.
+            salvaged = _salvage_artist_before_comma(stripped)
+            if salvaged:
+                return salvaged
             continue
         # Reject descriptive sentences ("This is an incredible show...") and
         # taper-metadata lines ("Steel Pulse - Sunsplash - JA 8-21-87 SBD4").
@@ -645,8 +773,14 @@ def _first_artist_line(nonblank: list[str]) -> str | None:
         if _SENTENCE_OPENER.match(stripped):
             continue
         if _SOURCE_CODE_TOKEN.search(stripped):
+            salvaged = _salvage_artist_before_comma(stripped)
+            if salvaged:
+                return salvaged
             continue
         if _EMBEDDED_DATE_SHAPE.search(stripped):
+            salvaged = _salvage_artist_before_comma(stripped)
+            if salvaged:
+                return salvaged
             continue
         if _VENUE_KEYWORDS.search(stripped):
             continue
@@ -659,6 +793,100 @@ def _first_artist_line(nonblank: list[str]) -> str | None:
             continue
         return stripped
     return None
+
+
+_PROSE_VERB_TOKEN = re.compile(
+    r"\b(?:is|was|are|were|be|been|being|has|have|had|"
+    r"came|comes|come|went|goes|going|did|does|done|doing|"
+    r"plays|played|playing|play|"
+    r"check|checked|checking|"
+    r"includes|included|including|include|"
+    r"recorded|recording|taped|taping|"
+    r"sounds|sounded|sound|"
+    r"appears|appeared|appearing)\b",
+    re.I,
+)
+
+
+def _looks_like_prose_artist(candidate: str) -> bool:
+    """True if *candidate* reads as a prose sentence rather than an artist
+    name.
+
+    Used as a last-line defence in ``build_concert``: when body parsing
+    hands us something that plainly isn't a name — typically because a
+    descriptive line slipped past ``_first_artist_line`` — prefer the
+    folder-name fallback.
+
+    Heuristics:
+      * Over 60 chars OR 8+ words is prose territory (longest real artist
+        names we've seen top out around "The Nitty Gritty Dirt Band Featuring
+        John Denver" — 48 chars).
+      * 5+ words AND contains a common sentence verb / connector.
+    """
+    if not candidate:
+        return False
+    c = candidate.strip()
+    if len(c) > 60:
+        return True
+    words = c.split()
+    if len(words) >= 8:
+        return True
+    if len(words) >= 5 and _PROSE_VERB_TOKEN.search(c):
+        return True
+    return False
+
+
+def _salvage_artist_before_comma(line: str) -> str | None:
+    """Return the clean artist token from a noisy ``Artist, City, date,
+    source`` header, or None if the head before the first comma doesn't
+    look artist-shaped.
+
+    Real-world shapes we catch::
+
+        Taj MAHAL, Bologna-Italy, 9 april 1978, 2d gen SB + Bonus FM
+        Bob Dylan, Manchester UK, 17 May 1966, Free Trade Hall SBD
+
+    The full line fails the strict filters (date, source code) but the
+    prefix is the artist and losing it costs us correct tagging on
+    hundreds of etree-style headers.
+    """
+    if "," not in line:
+        return None
+    # Full-line mic-placement signal rules out salvaging — "Main Stage, at
+    # the SBD, ROC" has a deceptively clean head but the whole line is
+    # placement jargon, not artist metadata. Venue keywords in the tail
+    # (Hall, Garden, Arena) are fine — they're the expected venue field
+    # that follows a real artist prefix.
+    if _MIC_PLACEMENT.search(line):
+        return None
+    if _LINEAGE_CHAIN.search(line):
+        return None
+    head = line.split(",", 1)[0].strip("*#=-_ \t")
+    if not head:
+        return None
+    letters = sum(ch.isalpha() for ch in head)
+    if letters < 2:
+        return None
+    # 2-60 chars keeps us inside plausible artist-name length. The full-line
+    # check above already let us through with longer strings — this is the
+    # tight guard for the salvaged head.
+    if len(head) > 60:
+        return None
+    if _SENTENCE_OPENER.match(head):
+        return None
+    if _SOURCE_CODE_TOKEN.search(head):
+        return None
+    if _EMBEDDED_DATE_SHAPE.search(head):
+        return None
+    if parse_date(head):
+        return None
+    if _VENUE_KEYWORDS.search(head):
+        return None
+    if _MIC_PLACEMENT.search(head):
+        return None
+    if _looks_like_city(head):
+        return None
+    return head
 
 
 def _looks_like_venue(line: str) -> bool:
@@ -896,6 +1124,12 @@ def build_concert(
     filenames = "  ".join(f.name for f in audio)
 
     artist = parsed.get("artist") or guess_artist_from_folder(folder_name)
+    # If the body yielded a prose-shaped "artist" (sentence verbs, too many
+    # words), discard it so parent-trust / lexicon can rescue the right
+    # name from the folder tree. Prevents "An interesting SB Taj solo…"
+    # from becoming the ARTIST tag on 23 FLACs.
+    if artist and _looks_like_prose_artist(artist):
+        artist = guess_artist_from_folder(folder_name)
     # Folder-name dates are almost always the concert date; info.txt bodies
     # often mention mastering/transfer dates that shouldn't win.
     date = parse_date(folder_name) or parse_date(filenames) or parsed.get("date")

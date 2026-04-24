@@ -665,3 +665,143 @@ class TestLexiconArtistFromParent:
         show.mkdir(parents=True)
         lex = Lexicon()
         assert _lexicon_artist_from_parent(show, lex) is None
+
+
+# ---------------------------------------------------------------------------
+# Regression tests built from real info.txt files the parser used to botch.
+# Fixtures live under tests/fixtures/info_txt/ so the exact byte content is
+# preserved (encoding, whitespace, etc.).
+
+FIXTURES_TXT = Path(__file__).parent / "fixtures" / "info_txt"
+
+
+class TestTajMahalBolognaFixture:
+    """Line 1 is a rich ``Artist, City-Region, date, source`` header —
+    perfect content, but the parser used to reject it (date + source noise)
+    and fall through to a prose description two lines down, then stamp that
+    sentence onto every FLAC."""
+
+    def _body(self) -> str:
+        return (FIXTURES_TXT / "taj_mahal_bologna.txt").read_text(encoding="utf-8")
+
+    def test_artist_salvaged_from_rich_first_line(self):
+        out = parse_info_txt(self._body())
+        artist = (out.get("artist") or "").replace("MAHAL", "Mahal")
+        assert artist.lower().startswith("taj mahal"), f"got {artist!r}"
+        # Prose must never win.
+        assert "interesting" not in artist.lower()
+        assert "background" not in artist.lower()
+
+    def test_setlist_recognized(self):
+        titles = [t for _, t in parse_info_txt(self._body()).get("setlist", [])]
+        assert "Sweet Home Chicago" in titles
+        assert len(titles) == 23
+
+    def test_build_concert_end_to_end(self, tmp_path: Path, make_flac):
+        folder = tmp_path / (
+            "Taj Mahal 1978-04-09 Bologna, Italy 2nd gen SB and 1978 filler"
+        )
+        folder.mkdir()
+        for i in range(1, 24):
+            make_flac(folder / f"{i:02d}.flac")
+        audio = sorted(folder.glob("*.flac"))
+        info = folder / "tajmahal78 info.txt"
+        info.write_text(self._body(), encoding="utf-8")
+        c = build_concert(folder, audio, info)
+        assert c.artist and c.artist.lower().replace("mahal", "mahal").startswith("taj mahal"), \
+            f"expected Taj Mahal, got {c.artist!r}"
+        assert c.date == "1978-04-09"
+        album = c.album_name()
+        assert "interesting" not in album.lower()
+        assert "background noise" not in album.lower()
+
+
+class TestRichFirstLineSalvage:
+    """`Artist, City-Region, date, source, ...` is a common etree / taper
+    header shape. The artist lives before the first comma — salvage it
+    even when the rest of the line trips source/date filters."""
+
+    @pytest.mark.parametrize("line,expected", [
+        ("Taj Mahal, Bologna-Italy, 9 april 1978, 2d gen SB + Bonus FM", "Taj Mahal"),
+        ("Bob Dylan, Manchester UK, 17 May 1966, Free Trade Hall SBD", "Bob Dylan"),
+        ("Phish, Madison Square Garden, December 31, 1997, MTX", "Phish"),
+    ])
+    def test_salvage_artist_before_first_comma(self, line, expected):
+        body = f"{line}\n01. First\n02. Second\n"
+        out = parse_info_txt(body)
+        assert out.get("artist") == expected
+
+
+class TestProseArtistFallsBackToParent:
+    """When the body yields a prose-shaped artist (many words, sentence
+    verbs), fall through to the parent folder rather than writing the
+    prose string into every tag."""
+
+    def test_parent_name_overrides_prose_body(self, tmp_path: Path, make_flac):
+        folder = tmp_path / "Taj Mahal" / "1978-04-09 Bologna"
+        folder.mkdir(parents=True)
+        audio = [make_flac(folder / "01.flac")]
+        # Body has no recognisable artist line; only prose descriptions.
+        body = (
+            "An interesting SB Taj solo, even there is some background noise.\n"
+            "Richie Heavens came on stage for the last song.\n"
+            "01. Sweet Home Chicago\n"
+        )
+        info = folder / "info.txt"
+        info.write_text(body, encoding="utf-8")
+        c = build_concert(folder, audio, info)
+        assert c.artist == "Taj Mahal", f"got {c.artist!r}"
+
+    @pytest.mark.parametrize("prose", [
+        "An interesting SB Taj solo, even there is some background noise.",
+        "This recording came from a friend in the 90s and sounds great.",
+        "Richie Heavens came on stage for the last song of the night.",
+        "Recorded from the soundboard with minor distortion throughout.",
+    ])
+    def test_parse_info_txt_rejects_prose_as_artist(self, prose):
+        body = f"{prose}\n01. First Song\n"
+        out = parse_info_txt(body)
+        assert out.get("artist") != prose
+
+
+class TestUnnumberedSetlist:
+    """Qango, Kiss Brussels, and similar European tape info files list
+    tracks one per line without numbering. Recognise them when an
+    explicit ``Setlist``/``Tracklist`` header or disc marker precedes."""
+
+    def test_tracks_under_setlist_header(self):
+        body = (
+            "QANGO - live at The Brook, Southampton\n"
+            "Saturday 5th February, 2000\n"
+            "\n"
+            "Setlist:\n"
+            "Intro (Fanfare)\n"
+            "Sole Survivor\n"
+            "Bitch's Crystal\n"
+            "The Smile Has Left Your Eyes\n"
+            "All Along the Watchtower\n"
+        )
+        out = parse_info_txt(body)
+        titles = [t for _, t in out.get("setlist", [])]
+        assert "Sole Survivor" in titles
+        assert "Bitch's Crystal" in titles
+        assert "All Along the Watchtower" in titles
+
+    def test_tracks_under_disc_marker(self):
+        body = (
+            "Qango\n"
+            "2000-02-05\n"
+            "\n"
+            "Disc 1\n"
+            "\n"
+            "Sole Survivor\n"
+            "Bitch's Crystal\n"
+            "All Along the Watchtower\n"
+        )
+        out = parse_info_txt(body)
+        titles = [t for _, t in out.get("setlist", [])]
+        assert titles == [
+            "Sole Survivor",
+            "Bitch's Crystal",
+            "All Along the Watchtower",
+        ]

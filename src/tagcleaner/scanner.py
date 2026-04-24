@@ -27,7 +27,17 @@ from .parser import build_concert
 from .models import Concert
 
 AUDIO_EXTS = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav"}
-FINGERPRINT_EXT_HINTS = ("ffp", "md5", "sha", "shntool", "audiochecker", "sbeok")
+# Filename substrings that flag a file as checksum / tool-output rather than
+# a real info.txt. Matched case-insensitively against the lowercased name.
+# `audiochecker` catches CDDAccuracy/AudioChecker; `aucdtect` is a separate
+# CDDA authenticity tool. `foo_dr` = foobar Dynamic Range report. `artwork`
+# = cover-art JPG listing (always MD5 output). `demonoid` = tracker-spam
+# "Torrent downloaded from Demonoid.com.txt". `fpt` = an alternate spelling
+# of fingerprint. `tau` = Tau Analyzer output.
+FINGERPRINT_EXT_HINTS = (
+    "ffp", "fpt", "md5", "sha", "shntool", "audiochecker", "aucdtect", "sbeok",
+    "foo_dr", "artwork", "demonoid", "tau analyzer", "tauanalyzer",
+)
 
 # Filename basenames (case-insensitive, with or without extension) that are
 # treated as info-source candidates even when not ending in .txt. Lets etree
@@ -514,7 +524,11 @@ def _classify(
                         low = name.lower()
                         if any(h in low for h in FINGERPRINT_EXT_HINTS):
                             continue
-                        info.append((Path(entry.path), _entry_size(entry)))
+                        p = Path(entry.path)
+                        sz = _entry_size(entry)
+                        if _looks_like_checksum_body(p, sz):
+                            continue
+                        info.append((p, sz))
                 elif is_dir:
                     subdirs.append(Path(entry.path))
     except OSError:
@@ -530,6 +544,47 @@ def _entry_size(entry: "os.DirEntry[str]") -> int:
         return entry.stat(follow_symlinks=False).st_size
     except OSError:
         return -1
+
+
+# Hash-and-filename lines (md5sum, shasum, sfv) or FLAC fingerprint lines
+# ("file.flac:abcdef..."). Filenames may contain spaces — match "rest of
+# line" after the hash rather than a single token.
+_CHECKSUM_LINE_RE = re.compile(
+    r"^(?:[a-f0-9]{16,}\s+[*?]?\S.*|\S+\.(?:flac|shn|wav|mp3):[a-f0-9]{16,})$",
+    re.I,
+)
+
+
+def _looks_like_checksum_body(path: Path, size: int) -> bool:
+    """True when *path*'s content is dominated by hash-and-filename lines.
+
+    Catches files that slip past the filename filter — e.g. ``Disc 1.txt``
+    whose body is actually ``md5sum`` output — and prevents them from being
+    treated as info.txt. Only sniffed for small files; real checksum
+    manifests are tiny (a few KB) and real info.txt files above 16KB have
+    never turned out to be checksums in the wild.
+    """
+    if size <= 0 or size > 16_384:
+        return False
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(4096)
+    except OSError:
+        return False
+    if not raw:
+        return False
+    try:
+        text = raw.decode("utf-8", errors="replace")
+    except (UnicodeDecodeError, LookupError):
+        return False
+    # Ignore blank lines and comment/banner lines (md5summer / shntool put
+    # generator info on '#'-prefixed or ';'-prefixed lines).
+    data = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    data = [ln for ln in data if not ln.startswith(("#", ";"))]
+    if len(data) < 3:
+        return False
+    hits = sum(1 for ln in data if _CHECKSUM_LINE_RE.match(ln))
+    return hits / len(data) >= 0.6
 
 
 def _fingerprint(
