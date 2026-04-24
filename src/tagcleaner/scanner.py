@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -173,7 +173,12 @@ def iter_concert_folders(root: Path) -> Iterator[tuple[Path, list[Path], Path | 
 
 
 
-def list_candidate_dirs(root: Path, *, max_depth: int = 8) -> list[tuple[Path, float]]:
+def list_candidate_dirs(
+    root: Path,
+    *,
+    max_depth: int = 8,
+    exclude: Iterable[str] = (),
+) -> list[tuple[Path, float]]:
     """Return ``(candidate_folder, folder_mtime)`` pairs beneath *root*.
 
     Walks recursively so that artist-nested libraries (``Tapes/Artist/show/``)
@@ -187,11 +192,15 @@ def list_candidate_dirs(root: Path, *, max_depth: int = 8) -> list[tuple[Path, f
     Otherwise we descend into each subdirectory to keep looking.
 
     ``max_depth`` guards against pathological trees / symlink loops.
+    ``exclude`` is an iterable of directory basenames to skip entirely
+    (case-insensitive, matched against folder.name during the walk). Useful
+    for staging directories like ``incomplete``, ``downloads``, ``trash``.
     """
     if not root.is_dir():
         return []
     out: list[tuple[Path, float]] = []
-    _collect_candidates(root, out, depth=0, max_depth=max_depth)
+    excl_set = {s.strip().lower() for s in exclude if s and s.strip()}
+    _collect_candidates(root, out, depth=0, max_depth=max_depth, excl=excl_set)
     out.sort(key=lambda pair: str(pair[0]))
     return out
 
@@ -202,8 +211,11 @@ def _collect_candidates(
     *,
     depth: int,
     max_depth: int,
+    excl: set[str] = frozenset(),
 ) -> None:
     if depth > max_depth:
+        return
+    if depth > 0 and folder.name.lower() in excl:
         return
     classified = _classify(folder)
     if classified is None:
@@ -221,7 +233,7 @@ def _collect_candidates(
         # hidden; descent is a no-op for concerts whose only children are
         # accessory dirs like ``Artwork``.
         for sub in subdirs:
-            _collect_candidates(sub, out, depth=depth + 1, max_depth=max_depth)
+            _collect_candidates(sub, out, depth=depth + 1, max_depth=max_depth, excl=excl)
         return
     if not subdirs:
         return
@@ -234,7 +246,7 @@ def _collect_candidates(
         out.append((folder, mtime))
         return
     for sub in subdirs:
-        _collect_candidates(sub, out, depth=depth + 1, max_depth=max_depth)
+        _collect_candidates(sub, out, depth=depth + 1, max_depth=max_depth, excl=excl)
 
 
 def _is_multi_disc_parent(parent: Path, subdirs: list[Path]) -> bool:
@@ -350,6 +362,7 @@ def scan(
     on_skip: Callable[[Path, int, int], None] | None = None,
     on_done: Callable[[Concert, int, int], None] | None = None,
     lexicon: Lexicon | None = None,
+    exclude: Iterable[str] = (),
 ) -> list[tuple[Concert, str, float]]:
     """Parse every concert folder under *root*.
 
@@ -369,7 +382,7 @@ def scan(
 
     All callbacks receive 1-based indices and the total candidate count.
     """
-    candidates = list_candidate_dirs(root)
+    candidates = list_candidate_dirs(root, exclude=exclude)
     total = len(candidates)
     results: list[tuple[Concert, str, float]] = []
     for idx, (folder, mtime) in enumerate(candidates, start=1):
