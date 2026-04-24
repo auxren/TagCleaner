@@ -839,6 +839,48 @@ class TestProseArtistFallsBackToParent:
         assert out.get("artist") != prose
 
 
+class TestStreakTriggerUnnumbered:
+    """Some info.txt files list unnumbered tracks at the bottom without
+    any 'Setlist:' / 'Disc 1' trigger ahead of them (A-Ha Hammersmith,
+    AC/DC Monsters of Rock '84, …). Detect a run of 5+ consecutive
+    title-shape lines and backfill them as tracks."""
+
+    def test_trailing_title_block_without_header(self):
+        body = (
+            "Aha - Hammersmith Odeon, UK 1986-12-16\n\n"
+            "Something a bit different from me but I quite liked some of the stuff these guys did.\n\n"
+            "train of thought\n"
+            "love is reason\n"
+            "living a boy's adventure tale\n"
+            "cry wolf\n"
+            "the blue sky\n"
+            "the sun always shines on tv\n"
+        )
+        titles = [t for _, t in parse_setlist(body)]
+        assert "train of thought" in titles
+        assert "love is reason" in titles
+        assert "cry wolf" in titles
+        assert "the blue sky" in titles
+
+    def test_single_word_leader_dropped(self):
+        # "AC/DC" is an artist header, not a track. A single-word line
+        # immediately before a run of multi-word titles should NOT become
+        # the first track entry.
+        body = (
+            "Notes about the show and taping details...\n\n"
+            "AC/DC\n\n"
+            "Guns For Hire\n"
+            "Shoot To Thrill\n"
+            "Sin City\n"
+            "Back In Black\n"
+            "Rock And Roll Ain't Noise Pollution\n"
+        )
+        titles = [t for _, t in parse_setlist(body)]
+        assert "AC/DC" not in titles
+        assert "Guns For Hire" in titles
+        assert "Rock And Roll Ain't Noise Pollution" in titles
+
+
 class TestVinylSetlist:
     """Vinyl-bootleg info files use side-letter prefixes instead of track
     numbers (``A1 Song``, ``B2 Other``, ``D5 Last``). Before this parser

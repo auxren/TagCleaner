@@ -524,25 +524,33 @@ def parse_setlist(body: str) -> list[tuple[int | None, str]]:
 
     Two-pass strategy: first pass only accepts numbered tracks
     (``01. Title`` / ``d1t05 Title`` / etc.). If that yields at least 3
-    tracks, we return those — the overwhelmingly common case. Only when
-    the numbered pass falls short AND we saw an explicit setlist / disc
-    marker do we run a second pass in unnumbered mode (Qango, Kiss
-    Brussels, older European bootleg conventions).
+    tracks, we return those — the overwhelmingly common case. If the
+    numbered pass comes up short we run a second pass with unnumbered
+    mode enabled — it fires on an explicit ``Setlist`` / disc marker, or
+    (as of the streak-trigger below) after 5+ consecutive plausible
+    title-shape lines appear without any header.
     """
-    first, saw_trigger = _setlist_pass(body, allow_unnumbered=False)
-    if len(first) >= 3 or not saw_trigger:
+    first, _ = _setlist_pass(body, allow_unnumbered=False)
+    if len(first) >= 3:
         return first
     second, _ = _setlist_pass(body, allow_unnumbered=True)
     return second if len(second) > len(first) else first
+
+
+# Streak length that promotes a run of title-shape lines to tracks even
+# without a preceding ``Setlist:`` / ``Disc N`` trigger. Deliberately on
+# the high side — 5 consecutive short, capitalised, non-prose lines is
+# a strong signal; lower thresholds over-fire on credit blocks.
+_STREAK_TRIGGER = 5
 
 
 def _setlist_pass(
     body: str, *, allow_unnumbered: bool,
 ) -> tuple[list[tuple[int | None, str]], bool]:
     """Core setlist scanner. Returns ``(results, saw_trigger)`` where
-    *saw_trigger* is True if we encountered a disc marker or explicit
-    setlist header — the signal that unnumbered mode would be safe to
-    try on a second pass.
+    *saw_trigger* records whether any unnumbered-mode trigger (header,
+    disc marker, or streak) fired — useful context for callers that
+    want to distinguish "no setlist" from "parser punted".
     """
     lines = body.splitlines()
     current_disc: int | None = None
@@ -551,15 +559,29 @@ def _setlist_pass(
     pending_encore = False
     unnumbered_mode = False
     saw_trigger = False
+    pending_titles: list[str] = []  # streak buffer for auto-trigger
+
+    def _emit_unnumbered(title: str) -> None:
+        title = TRAILING_DURATION.sub("", title).strip()
+        if not title or len(title) > 200:
+            return
+        disc_val = current_disc
+        if pending_encore:
+            disc_val = (current_disc or 1) + 1
+        results.append((disc_val if saw_disc_marker else None, title))
 
     for raw in lines:
         line = raw.strip()
         if not line:
+            # Blank lines DON'T break the streak — info files commonly
+            # leave a blank between header and setlist block.
             continue
         if TRACK_SKIP.match(line):
+            pending_titles = []
             continue
         disc = _disc_from_marker(line)
         if disc is not None:
+            pending_titles = []
             saw_disc_marker = True
             saw_trigger = True
             unnumbered_mode = allow_unnumbered
@@ -570,6 +592,7 @@ def _setlist_pass(
                 pending_encore = False
             continue
         if _SETLIST_HEADER_RE.match(line):
+            pending_titles = []
             saw_trigger = True
             unnumbered_mode = allow_unnumbered
             continue
@@ -578,6 +601,7 @@ def _setlist_pass(
             # Vinyl side-letter tracks — ``A1 Live Wire`` → disc A, track 1.
             vm = VINYL_TRACK_LINE.match(line)
             if vm:
+                pending_titles = []
                 side = vm.group(1).upper()
                 v_title = vm.group(3).strip().strip(":-").strip()
                 v_title = TRAILING_DURATION.sub("", v_title).strip()
@@ -587,16 +611,26 @@ def _setlist_pass(
                     saw_disc_marker = True
                     current_disc = v_disc
                 continue
-            if unnumbered_mode and _looks_like_unnumbered_title(line):
-                title = TRAILING_DURATION.sub("", line).strip()
-                if title and len(title) <= 200:
-                    disc_val = current_disc
-                    if pending_encore:
-                        disc_val = (current_disc or 1) + 1
-                    results.append(
-                        (disc_val if saw_disc_marker else None, title)
-                    )
+            if allow_unnumbered and _looks_like_unnumbered_title(line):
+                if unnumbered_mode:
+                    _emit_unnumbered(line)
+                else:
+                    pending_titles.append(line)
+                    if len(pending_titles) >= _STREAK_TRIGGER:
+                        # Promote to unnumbered mode. Drop any leading
+                        # single-word line (likely an artist header
+                        # like "AC/DC") before backfilling.
+                        start = 1 if len(pending_titles[0].split()) == 1 else 0
+                        for buf in pending_titles[start:]:
+                            _emit_unnumbered(buf)
+                        pending_titles = []
+                        unnumbered_mode = True
+                        saw_trigger = True
+            else:
+                pending_titles = []
             continue
+        # Matched TRACK_LINE — reset streak and record.
+        pending_titles = []
         title = m.group(2).strip().strip(":-").strip()
         title = TRAILING_DURATION.sub("", title).strip()
         if not title or len(title) > 200:
