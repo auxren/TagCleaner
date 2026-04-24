@@ -330,9 +330,12 @@ class TestAlreadyTaggedSkip:
         folder = tmp_path / "show"
         audio = make_flac(folder / "01.flac")
         pre = FLAC(str(audio))
-        pre["ARTIST"] = "Hand Tagged Artist"
+        # ARTIST already matches the plan's artist ("Test Artist") and
+        # track number matches → album-only path fires. Non-plan fields
+        # like TITLE/DATE are preserved.
+        pre["ARTIST"] = "Test Artist"
         pre["TITLE"] = "Hand Tagged Title"
-        pre["TRACKNUMBER"] = "05"
+        pre["TRACKNUMBER"] = "01"
         pre["DATE"] = "1999-12-31"
         pre["ALBUM"] = "Old Album Format"
         pre.save()
@@ -346,13 +349,32 @@ class TestAlreadyTaggedSkip:
         assert results[0].changed is True
 
         f = FLAC(str(audio))
-        # Only ALBUM was updated; everything else preserved.
-        assert f["ARTIST"] == ["Hand Tagged Artist"]
-        assert f["TITLE"] == ["Hand Tagged Title"]
-        assert f["TRACKNUMBER"] == ["05"]
-        assert f["DATE"] == ["1999-12-31"]
-        # Album now matches the canonical format the planner would emit.
+        assert f["ARTIST"] == ["Test Artist"]
+        assert f["TITLE"] == ["Hand Tagged Title"]  # non-plan field preserved
+        assert f["TRACKNUMBER"] == ["01"]
+        assert f["DATE"] == ["1999-12-31"]  # non-plan field preserved
         assert f["ALBUM"][0].startswith("2000-01-01 ")
+
+    def test_mismatched_artist_triggers_full_rewrite(
+        self, tmp_path: Path, make_flac,
+    ):
+        # Existing ARTIST differs from the plan — tagger must rewrite
+        # rather than preserve. This is how we fix mixed-artist folders
+        # (Plex's VA bucket) and stale hand-edits in bulk re-tag runs.
+        folder = tmp_path / "show"
+        audio = make_flac(folder / "01.flac")
+        pre = FLAC(str(audio))
+        pre["ARTIST"] = "Wrong Artist"
+        pre["TRACKNUMBER"] = "01"
+        pre["ALBUM"] = "Whatever"
+        pre.save()
+
+        tracks = [Track(number=1, title="T")]
+        plans = build_plans(_concert(folder, [audio], tracks))
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert results[0].album_only is False  # full rewrite, not album-only
+        f = FLAC(str(audio))
+        assert f["ARTIST"] == ["Test Artist"]  # overwritten to plan value
 
     def test_matching_album_is_a_noop(self, tmp_path: Path, make_flac):
         folder = tmp_path / "show"
@@ -362,9 +384,11 @@ class TestAlreadyTaggedSkip:
         plans = build_plans(c)
 
         pre = FLAC(str(audio))
-        pre["ARTIST"] = "Existing Artist"
+        # ARTIST matches plan → album-only path eligible. ALBUM also
+        # matches → no write needed at all.
+        pre["ARTIST"] = "Test Artist"
         pre["TITLE"] = "Existing Title"
-        pre["TRACKNUMBER"] = "05"
+        pre["TRACKNUMBER"] = "01"
         pre["DATE"] = "1999-12-31"
         pre["ALBUM"] = plans[0].album
         pre.save()
@@ -402,9 +426,9 @@ class TestAlreadyTaggedSkip:
         folder = tmp_path / "show"
         audio = make_mp3(folder / "01.mp3")
         pre = EasyID3(str(audio))
-        pre["artist"] = "Hand Tagged"
+        pre["artist"] = "Test Artist"  # matches plan → album-only path
         pre["title"] = "Hand Title"
-        pre["tracknumber"] = "07"
+        pre["tracknumber"] = "01"
         pre["date"] = "1999"
         pre["album"] = "Old"
         pre.save()
@@ -417,19 +441,19 @@ class TestAlreadyTaggedSkip:
         assert results[0].album_only is True
 
         tags = EasyID3(str(audio))
-        assert tags["artist"] == ["Hand Tagged"]
-        assert tags["title"] == ["Hand Title"]
+        assert tags["artist"] == ["Test Artist"]
+        assert tags["title"] == ["Hand Title"]  # non-plan field preserved
         assert tags["album"][0].startswith("2000-01-01 ")
 
     def test_metadata_only_plan_also_honours_skip(
         self, tmp_path: Path, make_flac,
     ):
-        # Metadata-only plans have no title/tracknumber to check; only ARTIST
-        # (and DATE, if the plan has one) need to be present.
+        # Metadata-only plans have no title/tracknumber to check; ARTIST
+        # must match plan value for album-only to fire.
         folder = tmp_path / "show"
         audio = make_flac(folder / "01.flac")
         pre = FLAC(str(audio))
-        pre["ARTIST"] = "Hand Tagged"
+        pre["ARTIST"] = "Test Artist"
         pre["DATE"] = "1999-12-31"
         pre["TITLE"] = "Preserved"
         pre["TRACKNUMBER"] = "42"
@@ -443,7 +467,7 @@ class TestAlreadyTaggedSkip:
         assert all(r.ok for r in results)
         assert results[0].album_only is True
         f = FLAC(str(audio))
-        assert f["ARTIST"] == ["Hand Tagged"]
+        assert f["ARTIST"] == ["Test Artist"]
         assert f["TITLE"] == ["Preserved"]
         assert f["TRACKNUMBER"] == ["42"]
 
@@ -516,14 +540,14 @@ class TestMinimalTags:
     def test_already_core_tagged_is_album_only(
         self, tmp_path: Path, make_flac,
     ):
-        # In minimal mode only ARTIST + TRACKNUMBER need to be present for
-        # the "already tagged, just rewrite ALBUM" fast path to fire — DATE
-        # and TITLE don't count.
+        # In minimal mode ARTIST + TRACKNUMBER must match the plan value
+        # for the "already tagged, just rewrite ALBUM" fast path to fire.
+        # DATE and TITLE are ignored in this mode.
         folder = tmp_path / "show"
         audio = make_flac(folder / "01.flac")
         pre = FLAC(str(audio))
-        pre["ARTIST"] = "Hand Tagged"
-        pre["TRACKNUMBER"] = "07"
+        pre["ARTIST"] = "Test Artist"  # matches plan
+        pre["TRACKNUMBER"] = "01"  # matches plan (track 1)
         pre["ALBUM"] = "Stale"
         pre.save()
 
@@ -534,5 +558,5 @@ class TestMinimalTags:
         assert results[0].album_only is True
         assert results[0].changed is True
         f = FLAC(str(audio))
-        assert f["ARTIST"] == ["Hand Tagged"]  # not rewritten
+        assert f["ARTIST"] == ["Test Artist"]
         assert f["ALBUM"][0].startswith("2000-01-01 ")

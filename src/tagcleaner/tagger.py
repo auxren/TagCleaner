@@ -141,21 +141,59 @@ def _tag_present(tags, key: str) -> bool:
     return bool(str(val).strip())
 
 
+def _tag_value(tags, *keys) -> str:
+    """Return the first non-empty value across *keys*, stripped. '' if none."""
+    for key in keys:
+        val = tags.get(key)
+        if val is None:
+            continue
+        if isinstance(val, list):
+            val = val[0] if val else ""
+        s = str(val).strip()
+        if s:
+            return s
+    return ""
+
+
 def _is_already_tagged(plan: TagPlan, tags) -> bool:
     """True when every field this plan would write (other than ALBUM) is
-    already non-blank on the file.
+    already on the file AND matches the plan's value.
 
     ``tags`` can be any mutagen-style dict (FLAC or EasyID3). ALBUM is
     intentionally excluded — we always want to rewrite it to our
     canonical ``YYYY-MM-DD Venue, City [source]`` format. In ``minimal``
-    mode we only check the fields we'd actually write (artist + track).
+    mode we only check the fields we'd actually write (artist +
+    albumartist + track).
+
+    A VALUE-LEVEL check (not just presence) is required: mixed-artist
+    folders where one track says "Dinosaur Jr." and the next says
+    "Dinosaur Jr., Kevin Sweeney & Kyle Spence" used to be treated as
+    "already tagged" and skipped, leaving them inconsistent and landing
+    them in Plex's Various Artists bucket.
     """
-    if not _tag_present(tags, "ARTIST") and not _tag_present(tags, "artist"):
+    existing_artist = _tag_value(tags, "ARTIST", "artist")
+    if plan.artist:
+        if existing_artist != plan.artist:
+            return False
+        # Also require ALBUMARTIST to match when we'd write it. In minimal
+        # mode we write both ARTIST and ALBUMARTIST — if ALBUMARTIST lags
+        # behind (e.g. unchanged from old Plex VA grouping), rewrite.
+        existing_aa = _tag_value(tags, "ALBUMARTIST", "albumartist")
+        if existing_aa and existing_aa != plan.artist:
+            return False
+    elif not existing_artist:
+        # No plan artist, no existing artist — nothing to enforce.
         return False
-    if plan.track is not None and not (
-        _tag_present(tags, "TRACKNUMBER") or _tag_present(tags, "tracknumber")
-    ):
-        return False
+    if plan.track is not None:
+        existing_track = _tag_value(tags, "TRACKNUMBER", "tracknumber")
+        if not existing_track:
+            return False
+        # Compare as ints (tolerate "1" vs "01" vs "1/12" formats).
+        try:
+            if int(str(existing_track).split("/")[0]) != plan.track:
+                return False
+        except (ValueError, TypeError):
+            return False
     if plan.minimal:
         return True
     if plan.date and not (_tag_present(tags, "DATE") or _tag_present(tags, "date")):
