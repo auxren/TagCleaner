@@ -181,15 +181,22 @@ _ROMAN = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5, "vi": 6, "vii": 7}
 _WORDNUM = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8}
 
 # Track line forms:
-#   01 - Title / 01. Title / 01) Title / 01 Title / t01 Title / d1t05 Title
+#   01 - Title / 01. Title / 01) Title / 01 Title / t01 Title / d1t05 Title /
+#   1: Title (etree-with-colon, used by some old taper info.txt) /
+#   01_ Title (etree-with-underscore, seen on Bowie bootleg trees)
 TRACK_LINE = re.compile(
-    r"^\s*(?:d\d+)?[ts]?(\d{1,3})\s*[-.)\s]\s*(.+?)\s*$", re.I,
+    r"^\s*(?:d\d+)?[ts]?(\d{1,3})(?:\s*[-.)_\s]\s*|:\s+)(.+?)\s*$", re.I,
 )
 
 # Lines we treat as "not a track" even if they look like one:
 TRACK_SKIP = re.compile(
     r"^\s*\d+\.?\s*(?:md5|ffp|sha\d+|bytes?|samples?|kb|mb|gb)\b", re.I,
 )
+
+# Trailing "  1:09" / "  12:34" / "  :47" duration on a captured title —
+# strip it so the title isn't polluted with the etree-style length suffix.
+# Also handles bare "  :47" (no leading minutes), seen on intros/outros.
+TRAILING_DURATION = re.compile(r"\s+\d{0,3}:\d{2}\s*$")
 
 
 def parse_date(text: str) -> str | None:
@@ -362,6 +369,8 @@ def parse_setlist(body: str) -> list[tuple[int | None, str]]:
         if not m:
             continue
         title = m.group(2).strip().strip(":-").strip()
+        # Strip trailing "  1:09" duration suffix common in etree info.txt
+        title = TRAILING_DURATION.sub("", title).strip()
         if not title or len(title) > 200:
             continue
         # Drop anything that's clearly a hash or md5 line

@@ -101,6 +101,42 @@ class TestEnumerateFolder:
         (folder / "readme.txt").write_text("nothing here", encoding="utf-8")
         assert _enumerate_folder(folder) is None
 
+    def test_recognizes_non_txt_info_extensions(self, tmp_path: Path, make_flac):
+        """Scanner must accept .nfo, .info, .md, .rtf as info-source files
+        in addition to .txt, since real-world etree libraries use all of
+        these. Picks the largest available."""
+        folder = tmp_path / "show"
+        folder.mkdir()
+        make_flac(folder / "01.flac")
+        (folder / "show.nfo").write_text("nfo body " * 50, encoding="utf-8")
+        enum = _enumerate_folder(folder)
+        _, _, info, _ = enum
+        assert info is not None and info.name == "show.nfo"
+
+    def test_recognizes_extensionless_info_basenames(self, tmp_path: Path, make_flac):
+        """Some etree folders ship a bare `info`, `notes`, or `setlist`
+        file without an extension. Scanner should pick those up too."""
+        folder = tmp_path / "show"
+        folder.mkdir()
+        make_flac(folder / "01.flac")
+        (folder / "info").write_text("setlist content", encoding="utf-8")
+        enum = _enumerate_folder(folder)
+        _, _, info, _ = enum
+        assert info is not None and info.name == "info"
+
+    def test_rtf_picked_over_smaller_txt(self, tmp_path: Path, make_flac):
+        """Mac TextEdit defaults to .rtf when 'saving as .txt' from the
+        GUI. The largest-wins selection should consider .rtf alongside
+        .txt — read_info_txt strips the RTF control words."""
+        folder = tmp_path / "show"
+        folder.mkdir()
+        make_flac(folder / "01.flac")
+        (folder / "tiny.txt").write_text("hi", encoding="utf-8")
+        (folder / "real.rtf").write_text("rtf body " * 200, encoding="utf-8")
+        enum = _enumerate_folder(folder)
+        _, _, info, _ = enum
+        assert info is not None and info.name == "real.rtf"
+
     def test_fingerprint_changes_with_content(self, tmp_path: Path, make_flac):
         folder = tmp_path / "show"
         folder.mkdir()

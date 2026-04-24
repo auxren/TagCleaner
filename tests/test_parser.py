@@ -155,6 +155,51 @@ class TestSetlistParser:
         tracks = _finalize_tracks(parse_setlist(body))
         assert [t.title for t in tracks] == ["A", "B", "C", "D"]
 
+    def test_colon_separator_etree_format(self):
+        """Some old etree info.txt files use `N: title  M:SS` format
+        (number-colon-space-title-spaces-duration). Parser should accept
+        the colon and strip the trailing duration."""
+        body = (
+            "  1: tuning  1:09\n"
+            "  2: the wizard  8:46\n"
+            "  3: midnight tango  8:07\n"
+            "  4: race with the devil on the Spanish highway  10:52\n"
+        )
+        tracks = _finalize_tracks(parse_setlist(body))
+        assert [t.title for t in tracks] == [
+            "tuning", "the wizard", "midnight tango",
+            "race with the devil on the Spanish highway",
+        ]
+        assert [t.number for t in tracks] == [1, 2, 3, 4]
+
+    def test_colon_separator_requires_following_space(self):
+        """`12:34 Some Text` should NOT parse as track 12 with title
+        '34 Some Text' — the colon-as-separator only fires when followed
+        by a real space, distinguishing it from durations/timestamps."""
+        body = "12:34 elapsed time\n01. Real Track\n"
+        tracks = _finalize_tracks(parse_setlist(body))
+        # Only the real track should parse — the timestamp line has no space
+        # after the colon's digit (12:34 has digit-colon-digit).
+        assert [t.title for t in tracks] == ["Real Track"]
+
+    def test_underscore_separator(self):
+        """Some etree info files use `01_ Title` (number-underscore-space-
+        title). Seen on David Bowie / Stones bootleg trees."""
+        body = "01_ Intro\n02_ The Ties That Bind\n03_ Born to Run\n"
+        tracks = _finalize_tracks(parse_setlist(body))
+        assert [t.title for t in tracks] == ["Intro", "The Ties That Bind", "Born to Run"]
+
+    def test_trailing_duration_stripped(self):
+        """Bare `:47` durations (intros etc.) and `M:SS` durations should
+        be stripped from titles regardless of separator style."""
+        body = (
+            "01. Intro  :47\n"
+            "02. Main Event  12:34\n"
+            "03 - Encore  3:00\n"
+        )
+        tracks = _finalize_tracks(parse_setlist(body))
+        assert [t.title for t in tracks] == ["Intro", "Main Event", "Encore"]
+
 
 class TestParseInfoTxt:
     def test_artist_on_first_line(self):
