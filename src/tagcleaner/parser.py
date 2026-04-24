@@ -470,9 +470,17 @@ def _artist_from_bare_folder(folder_name: str) -> str | None:
     cleaned = folder_name.strip(" -,_.()[]")
     if not cleaned or len(cleaned) < 2 or len(cleaned) > 60:
         return None
-    if not re.match(r"^[A-Z]", cleaned):
+    # Must start with a capital letter, or a digit when followed by a
+    # capitalised word ("3 Doors Down", "10,000 Maniacs").
+    if not re.match(r"^[A-Z]|^\d+\s+[A-Z]", cleaned):
         return None
-    if re.search(r"\d", cleaned):
+    # Reject 4-digit year (clearly a date-shaped folder, not a pure artist
+    # name). Short numeric tokens are fine — "U2", "Sum 41", "Blink-182",
+    # "3 Doors Down" all have digits and are legitimate artist names.
+    if re.search(r"\b\d{4}\b", cleaned):
+        return None
+    # Reject date-like runs anywhere in the string (91-11-03, 7-8-80, etc.).
+    if re.search(r"\d{1,2}[-._/]\d{1,2}[-._/]\d{1,4}", cleaned):
         return None
     # "Boston MA", "Dallas TX", "Toronto ON" are location strings, not artists.
     if _US_STATE_SUFFIX.search(cleaned) or _CA_PROVINCE_SUFFIX.search(cleaned):

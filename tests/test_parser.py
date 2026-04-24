@@ -123,6 +123,11 @@ class TestWeakArtistFromFolder:
         ("Benny Goodman", "Benny Goodman"),
         ("Howard Jones", "Howard Jones"),
         ("Billy Talent", "Billy Talent"),
+        # Artist names with digits (reject a blanket-digit rule).
+        ("U2", "U2"),
+        ("Blink-182", "Blink-182"),
+        ("Sum 41", "Sum 41"),
+        ("3 Doors Down", "3 Doors Down"),
     ])
     def test_bare_folder_name_as_artist(self, folder: str, expected: str):
         assert weak_artist_from_folder(folder) == expected
