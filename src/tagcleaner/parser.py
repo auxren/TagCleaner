@@ -343,6 +343,21 @@ def guess_artist_from_folder(folder_name: str) -> str | None:
     return _clean_artist_candidate(folder_name[:pos])
 
 
+def _ancestor_is_various_artists(folder: Path) -> bool:
+    """True if any ancestor folder is literally named 'Various Artists'
+    (case-insensitive). Signal that *folder* sits inside a compilation
+    layout and its own name is almost certainly the per-set artist.
+    """
+    current = folder.parent
+    for _ in range(_ANCESTOR_DEPTH):
+        if current is None or current == current.parent:
+            return False
+        if current.name.lower() in ("various artists", "various"):
+            return True
+        current = current.parent
+    return False
+
+
 def weak_artist_from_folder(folder_name: str) -> str | None:
     """Last-resort artist extraction from the folder name alone.
 
@@ -1377,6 +1392,18 @@ def build_concert(
                 venue = match
     if not artist:
         artist = _trust_parent_artist(folder)
+    # Compilation override: when any ancestor folder is literally
+    # "Various Artists", the leaf folder's own name is almost always the
+    # per-set artist (festival layout:
+    # ``/Various Artists/<Compilation>/<Artist>/``). Prefer the leaf's
+    # name over either "Various Artists" itself or the compilation name
+    # picked up by ``_trust_parent_artist``. Without this, dozens of
+    # Concert For Amnesty / Two of Us subfolders stay tagged with the
+    # compilation name and end up in the Plex VA bucket.
+    if _ancestor_is_various_artists(folder):
+        candidate = weak_artist_from_folder(folder_name)
+        if candidate:
+            artist = candidate
     if not artist:
         # Last-resort: folder name as a weak artist signal. Covers lone
         # "Howard Jones" folders and "1969 Black Sabbath" leading-date

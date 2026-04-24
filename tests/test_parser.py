@@ -639,6 +639,24 @@ class TestBuildConcertIntegration:
         c = build_concert(folder, audio, None)
         assert c.artist == "Howard Jones"
 
+    def test_various_artists_compilation_uses_leaf_folder_name(
+        self, tmp_path: Path, make_flac
+    ):
+        # /Tapes/Various Artists/Concert For Amnesty/Peter Gabriel/*.flac —
+        # the lexicon walk hits "Various Artists" and used to stop there,
+        # tagging every artist's set as VA. The leaf folder name "Peter
+        # Gabriel" should win instead so Plex can group him correctly.
+        root = tmp_path / "Tapes"
+        root.mkdir()
+        folder = (
+            root / "Various Artists" / "Concert For Amnesty International" /
+            "Peter Gabriel"
+        )
+        folder.mkdir(parents=True)
+        audio = [make_flac(folder / "01.flac"), make_flac(folder / "02.flac")]
+        c = build_concert(folder, audio, None)
+        assert c.artist == "Peter Gabriel", f"got {c.artist!r}"
+
     def test_weak_fallback_not_preferred_over_parent_trust(
         self, tmp_path: Path, make_flac
     ):
