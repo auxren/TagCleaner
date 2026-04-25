@@ -538,6 +538,39 @@ class TestOfficialReleaseSkip:
         results = apply_plans(plans, Mode.IN_PLACE)
         assert results[0].skipped_official is True
 
+    def test_nugs_net_description_skipped(self, tmp_path: Path, make_flac):
+        # nugs.net is the official Grateful Dead vendor — its tag stamp
+        # in DESCRIPTION should make tagcleaner leave the file alone,
+        # even when the folder name doesn't match a known series token.
+        folder = tmp_path / "Some Show With No Recognised Series Name"
+        audio = make_flac(folder / "01.flac")
+        pre = FLAC(str(audio))
+        pre["ARTIST"] = "Grateful Dead"
+        pre["ALBUM"] = "Cornell 5/8/77"
+        pre["DESCRIPTION"] = "powered by nugs.net"
+        pre.save()
+        tracks = [Track(number=1, title="T")]
+        plans = build_plans(_concert(folder, [audio], tracks), minimal=True)
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert results[0].skipped_official is True
+        f = FLAC(str(audio))
+        assert f["ALBUM"] == ["Cornell 5/8/77"]
+
+    def test_musicbrainz_albumstatus_official_skipped(
+        self, tmp_path: Path, make_flac,
+    ):
+        folder = tmp_path / "Some Album"
+        audio = make_flac(folder / "01.flac")
+        pre = FLAC(str(audio))
+        pre["ARTIST"] = "Phish"
+        pre["ALBUM"] = "Junta"
+        pre["MUSICBRAINZ_ALBUMSTATUS"] = "Official"
+        pre.save()
+        tracks = [Track(number=1, title="T")]
+        plans = build_plans(_concert(folder, [audio], tracks), minimal=True)
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert results[0].skipped_official is True
+
     def test_normal_folder_not_skipped(self, tmp_path: Path, make_flac):
         # Sanity: a normal bootleg folder still gets tagged.
         folder = tmp_path / "1999-12-31 Madison Square Garden"

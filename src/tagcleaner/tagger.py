@@ -233,19 +233,60 @@ _OFFICIAL_RELEASE_TOKENS = (
     "road trips", "from the vault", "view from the vault",
     "30 trips around the sun", "spring 1990",
     "download series", "complete studio",
+    # Other Grateful Dead commercial series.
+    "skull and roses", "europe '72", "europe 72",
+    "fallout from the phil zone", "fillmore west 1969",
+    # Generic commercial markers.
+    "official release", "remastered edition",
+)
+
+# Description / comment field substrings that strongly signal a
+# commercial release. nugs.net is the official Grateful Dead vendor.
+_OFFICIAL_DESCRIPTION_MARKERS = (
+    "nugs.net", "powered by nugs", "(c) nugs",
+    "all rights reserved",
+    "amazon music", "itunes",
+    "tidal", "qobuz", "deezer",
 )
 
 
-def _looks_like_official_release(folder: Path | None, tag_keys) -> bool:
-    """True if *folder* looks like a commercial release we should leave
-    alone. Detected by, in order:
+def _tag_first(tags, *keys) -> str:
+    """Return the first non-empty tag value across *keys*. Tag containers
+    differ by format — keys are tried as-is, with FLAC-style upper and
+    EasyID3-style lower case variants implicit via the caller's choices.
+    """
+    if tags is None:
+        return ""
+    for key in keys:
+        try:
+            v = tags.get(key)
+        except Exception:
+            continue
+        if v is None:
+            continue
+        if isinstance(v, list):
+            v = v[0] if v else ""
+        s = str(v).strip()
+        if s:
+            return s
+    return ""
 
-    1. An explicit ``.tagcleaner-skip`` marker file in the folder
-       (user-controlled, definitive override).
-    2. Folder path containing a known commercial-series token
+
+def _looks_like_official_release(folder: Path | None, tags) -> bool:
+    """True if *folder* / *tags* signal a commercial release we should
+    leave alone. Multiple independent signals:
+
+    1. An explicit ``.tagcleaner-skip`` marker file (user override).
+    2. Folder path contains a known commercial-series token
        (``Dick's Picks``, ``Road Trips``, ``From the Vault``, …).
-    3. ``MUSICBRAINZ_RELEASETRACKID`` present on the file — only set by
-       taggers that matched against an official MB release.
+    3. ``MUSICBRAINZ_RELEASETRACKID`` is set, OR
+       ``MUSICBRAINZ_ALBUMSTATUS == 'Official'``.
+    4. The DESCRIPTION / COMMENT tag contains a vendor signature
+       (``nugs.net``, ``iTunes``, ``Amazon Music``, …) — strong evidence
+       the file came from a commercial source.
+
+    *tags* may be None (when called pre-open) or any dict-like tag
+    container — FLAC, EasyID3, _Id3View, _Mp4View all qualify.
     """
     if folder is not None:
         try:
@@ -256,9 +297,21 @@ def _looks_like_official_release(folder: Path | None, tag_keys) -> bool:
         pathstr = str(folder).lower()
         if any(tok in pathstr for tok in _OFFICIAL_RELEASE_TOKENS):
             return True
-    if tag_keys:
-        upper = {str(k).upper() for k in tag_keys}
-        if "MUSICBRAINZ_RELEASETRACKID" in upper:
+    if tags is not None:
+        try:
+            keys_upper = {str(k).upper() for k in tags.keys()}
+        except Exception:
+            keys_upper = set()
+        if "MUSICBRAINZ_RELEASETRACKID" in keys_upper:
+            return True
+        status = _tag_first(tags, "MUSICBRAINZ_ALBUMSTATUS", "musicbrainz_albumstatus")
+        if status and status.lower() == "official":
+            return True
+        # Vendor signature in description / comment.
+        desc = _tag_first(
+            tags, "DESCRIPTION", "description", "COMMENT", "comment"
+        ).lower()
+        if desc and any(m in desc for m in _OFFICIAL_DESCRIPTION_MARKERS):
             return True
     return False
 
@@ -283,7 +336,7 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool, bool]:
         return False, False, True
     if ext == ".flac":
         audio = FLAC(str(plan.dest))
-        if _looks_like_official_release(plan.dest.parent, audio.keys()):
+        if _looks_like_official_release(plan.dest.parent, audio):
             return False, False, True
         if _is_already_tagged(plan, audio):
             if _existing_album(audio) == plan.album:
@@ -320,7 +373,7 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool, bool]:
             mp3.add_tags()
             mp3.save()
             audio = EasyID3(str(plan.dest))
-        if _looks_like_official_release(plan.dest.parent, audio.keys()):
+        if _looks_like_official_release(plan.dest.parent, audio):
             return False, False, True
         if _is_already_tagged(plan, audio):
             if _existing_album(audio) == plan.album:
@@ -346,7 +399,7 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool, bool]:
         audio = WAVE(str(plan.dest))
         if audio.tags is None:
             audio.add_tags()
-        if _looks_like_official_release(plan.dest.parent, audio.tags.keys() if audio.tags else None):
+        if _looks_like_official_release(plan.dest.parent, audio.tags):
             return False, False, True
         view = _Id3View(audio.tags)
         if _is_already_tagged(plan, view):
@@ -375,7 +428,7 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool, bool]:
         audio = MP4(str(plan.dest))
         if audio.tags is None:
             audio.add_tags()
-        if _looks_like_official_release(plan.dest.parent, audio.tags.keys() if audio.tags else None):
+        if _looks_like_official_release(plan.dest.parent, audio.tags):
             return False, False, True
         view = _Mp4View(audio.tags)
         if _is_already_tagged(plan, view):
@@ -406,7 +459,7 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool, bool]:
         audio = MutagenFile(str(plan.dest))
         if audio is None or not isinstance(audio, (OggVorbis, OggOpus)):
             raise RuntimeError(f"unsupported ogg variant for {plan.dest}")
-        if _looks_like_official_release(plan.dest.parent, audio.keys()):
+        if _looks_like_official_release(plan.dest.parent, audio):
             return False, False, True
         if _is_already_tagged(plan, audio):
             if _existing_album(audio) == plan.album:
