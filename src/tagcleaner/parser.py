@@ -844,6 +844,42 @@ def parse_info_txt(body: str) -> dict:
                 continue
             data[key] = val
 
+    # Some old taper info files use space-separated labels with no colon
+    # or dash: "Venue Concertgebouw\nCity Amsterdam\nState Netherlands".
+    # The label word IS the field name and the rest of the line IS the
+    # value. Line-anchored to avoid catching prose like "Venue is on the
+    # corner..."; value must start with a capital letter.
+    for pat, key in [
+        (r"^[Aa]rtist\s+([A-Z][^\n]{1,80})\s*$", "artist"),
+        (r"^[Bb]and\s+([A-Z][^\n]{1,80})\s*$", "artist"),
+        (r"^[Vv]enue\s+([A-Z][^\n]{1,80})\s*$", "venue"),
+        (r"^[Ll]ocation\s+([A-Z][^\n]{1,80})\s*$", "venue"),
+        (r"^[Cc]ity\s+([A-Z][^\n]{1,80})\s*$", "city"),
+        (r"^[Ss]tate\s+([A-Z][^\n]{1,80})\s*$", "region"),
+        (r"^[Cc]ountry\s+([A-Z][^\n]{1,80})\s*$", "region"),
+    ]:
+        m = re.search(pat, body, re.MULTILINE)
+        if m and key not in data:
+            val = m.group(1).strip().strip(",")
+            if not val:
+                continue
+            if key in ("venue", "artist") and _MIC_PLACEMENT.search(val):
+                continue
+            if key == "venue" and (
+                _LINEAGE_CHAIN.search(val) or _NON_VENUE_PREFIX.match(val)
+            ):
+                continue
+            data[key] = val
+
+    # If _first_artist_line picked a line that turned out to be a
+    # space-labeled venue/city/state row ("Venue Concertgebouw"), clear
+    # the artist so build_concert can fall back to parent-trust.
+    if data.get("artist") and re.match(
+        r"^(?:venue|city|state|country|location|source|lineage)\s+",
+        data["artist"], re.I,
+    ):
+        data.pop("artist", None)
+
     data["date"] = parse_date(body)
 
     # Venue + city: look at the first ~10 lines, skipping the line we used as

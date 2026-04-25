@@ -948,6 +948,48 @@ class TestVinylSetlist:
         assert discs == [1, 1, 2, 3, 4]
 
 
+class TestSpaceLabeledFields:
+    """Old taper info files use space-separated labels with no colon
+    or dash: ``Venue Concertgebouw\\nCity Amsterdam\\nState Netherlands``.
+    The label word IS the field name and the rest of the line IS the
+    value. Without this, the first-line picker grabs "Venue
+    Concertgebouw" as the artist and "City Amsterdam" as the venue."""
+
+    def test_venue_city_state_space_labeled(self):
+        body = (
+            "Manassas - 03/22/72\n"
+            "Venue Concertgebouw\n"
+            "City Amsterdam\n"
+            "State Netherlands\n"
+            "SBD>??>CD>FLAC\n"
+            "\n"
+            "01. First Song\n"
+            "02. Second Song\n"
+        )
+        out = parse_info_txt(body)
+        assert out.get("venue") == "Concertgebouw"
+        assert out.get("city") == "Amsterdam"
+        assert out.get("region") == "Netherlands"
+        # Artist must not be "Venue Concertgebouw" — should be None or
+        # something extracted from elsewhere (the body has nothing else).
+        assert out.get("artist") != "Venue Concertgebouw"
+
+    def test_does_not_fire_on_prose_lines(self):
+        # "Venue is on the corner of 5th and Main" should NOT be parsed
+        # as venue field — the value lacks an initial capital after the
+        # label word in a way that suggests a real label-value pair.
+        body = (
+            "Phish\n"
+            "1997-12-31\n"
+            "Madison Square Garden, New York, NY\n"
+            "Venue is great this time of year.\n"
+            "01. NICU\n"
+        )
+        out = parse_info_txt(body)
+        # Real venue from the comma line wins.
+        assert out.get("venue") == "Madison Square Garden"
+
+
 class TestUnnumberedSetlist:
     """Qango, Kiss Brussels, and similar European tape info files list
     tracks one per line without numbering. Recognise them when an
