@@ -697,6 +697,13 @@ class TestTrustParentArtist:
     filesystem, so tests can construct synthetic paths."""
 
     @pytest.mark.parametrize("path,expected", [
+        # Bracketed release-title boxset: parent has "[VGP-330]" and a
+        # trailing release-name. Strip from the first '[' or '(' so the
+        # lexicon walk hits the bare artist.
+        ("/Tapes/The Rolling Stones/Rolling Stones 2003-03 Japan tour/"
+         "Rolling Stones [VGP-330] Front Row (2003-03-10, Japan) (12CDs)/"
+         "2003-03-xx Front Row/2003-03-10 Budokan Hall, Tokyo/Disc 1",
+         "Rolling Stones"),
         # Brand-new artist folder: parent name IS the artist, lexicon empty.
         ("/Tapes/Oysterhead/2001-11-04 Hill Auditorium - Ann Arbor MI", "Oysterhead"),
         ("/Tapes/Frank Sinatra/1968-05-22 Oakland Coliseum", "Frank Sinatra"),

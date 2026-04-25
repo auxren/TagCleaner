@@ -1323,6 +1323,11 @@ def _trust_parent_artist(folder: Path) -> str | None:
                     continue
                 if YEAR_ONLY.search(cand):
                     continue
+                # Reject release-code brackets / parens — "[VGP-330]",
+                # "(SODD)", "[GBR-XX]" are bootleg release identifiers
+                # that don't belong in artist names.
+                if "[" in cand or "(" in cand:
+                    continue
                 if not re.match(r"^[A-Za-z0-9]", cand):
                     continue
                 if 2 <= len(cand) <= 60:
@@ -1385,6 +1390,14 @@ def _ancestor_candidates(name: str) -> list[str]:
         head = name_for_split.split("-", 1)[0]
         if " " in head:
             _push(head)
+    # Cut at the first '[' or '(' — bracket release codes (e.g. "[VGP-330]",
+    # "(SODD)") and parenthesised release-title trailers are not part of
+    # the artist name. "Rolling Stones [VGP-330] Front Row" → "Rolling Stones".
+    for sep in ("[", "("):
+        if sep in name_for_split:
+            head = name_for_split.split(sep, 1)[0].strip()
+            if head and " " in head or len(head.split()) >= 1:
+                _push(head)
     return seen
 
 
