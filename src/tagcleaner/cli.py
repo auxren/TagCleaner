@@ -481,6 +481,7 @@ def _apply(
         folder_ok = 0
         folder_album_only = 0
         folder_unchanged = 0
+        folder_skipped_official = 0
         for r in results:
             if not r.ok:
                 failures += 1
@@ -489,7 +490,10 @@ def _apply(
                 continue
             applied += 1
             folder_ok += 1
-            if r.album_only:
+            if r.skipped_official:
+                folder_skipped_official += 1
+                unchanged += 1
+            elif r.album_only:
                 if r.changed:
                     album_only += 1
                     folder_album_only += 1
@@ -497,7 +501,12 @@ def _apply(
                     unchanged += 1
                     folder_unchanged += 1
         if folder_fails == 0 and results:
-            if folder_unchanged == len(results):
+            if folder_skipped_official == len(results):
+                console.print(
+                    f"  [magenta]💿 official release[/] [bold]{c.folder.name}[/] "
+                    f"[dim](left untouched)[/]"
+                )
+            elif folder_unchanged == len(results):
                 console.print(
                     f"  [bright_black]✓ unchanged[/] [bold]{c.folder.name}[/] "
                     f"[dim](already tagged)[/]"

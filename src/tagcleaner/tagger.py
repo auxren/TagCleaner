@@ -50,6 +50,9 @@ class TagResult:
     error: str | None = None
     changed: bool = True       # False when the file was already fully tagged
     album_only: bool = False   # True when only ALBUM was rewritten
+    skipped_official: bool = False  # True when file was left untouched
+                                    # because it looks like an official release
+                                    # (Dick's Picks, Road Trips, MB-tagged, etc.)
 
 
 def build_plans(
@@ -121,9 +124,10 @@ def apply_plans(plans: list[TagPlan], mode: Mode) -> list[TagResult]:
                 plan.dest.parent.mkdir(parents=True, exist_ok=True)
                 if not plan.dest.exists() or plan.dest.stat().st_size != plan.file.stat().st_size:
                     shutil.copy2(plan.file, plan.dest)
-            changed, album_only = _write_tags(plan)
+            changed, album_only, skipped_official = _write_tags(plan)
             results.append(TagResult(
                 plan=plan, ok=True, changed=changed, album_only=album_only,
+                skipped_official=skipped_official,
             ))
         except Exception as exc:  # noqa: BLE001 - we want to report every failure
             results.append(TagResult(plan=plan, ok=False, error=f"{type(exc).__name__}: {exc}"))
@@ -220,26 +224,73 @@ def _existing_album(tags) -> str:
     return ""
 
 
-def _write_tags(plan: TagPlan) -> tuple[bool, bool]:
+# Folder/path tokens that signal a commercial release we should NOT touch:
+# Dick's Picks, Road Trips, From the Vault, etc. — Grateful Dead-led but
+# kept generic enough to catch other label series that follow the
+# "Series Volume N - Date Venue" naming convention.
+_OFFICIAL_RELEASE_TOKENS = (
+    "dick's picks", "dicks picks", "daves picks", "dave's picks",
+    "road trips", "from the vault", "view from the vault",
+    "30 trips around the sun", "spring 1990",
+    "download series", "complete studio",
+)
+
+
+def _looks_like_official_release(folder: Path | None, tag_keys) -> bool:
+    """True if *folder* looks like a commercial release we should leave
+    alone. Detected by, in order:
+
+    1. An explicit ``.tagcleaner-skip`` marker file in the folder
+       (user-controlled, definitive override).
+    2. Folder path containing a known commercial-series token
+       (``Dick's Picks``, ``Road Trips``, ``From the Vault``, …).
+    3. ``MUSICBRAINZ_RELEASETRACKID`` present on the file — only set by
+       taggers that matched against an official MB release.
+    """
+    if folder is not None:
+        try:
+            if (folder / ".tagcleaner-skip").exists():
+                return True
+        except OSError:
+            pass
+        pathstr = str(folder).lower()
+        if any(tok in pathstr for tok in _OFFICIAL_RELEASE_TOKENS):
+            return True
+    if tag_keys:
+        upper = {str(k).upper() for k in tag_keys}
+        if "MUSICBRAINZ_RELEASETRACKID" in upper:
+            return True
+    return False
+
+
+def _write_tags(plan: TagPlan) -> tuple[bool, bool, bool]:
     """Apply *plan* to the destination file.
 
-    Returns ``(changed, album_only)``:
+    Returns ``(changed, album_only, skipped_official)``:
     * ``changed`` — whether the file was actually saved.
     * ``album_only`` — True when every plan field except ALBUM was already
       populated, so we only rewrote ALBUM to match the canonical format.
+    * ``skipped_official`` — True when the file was left untouched
+      because it looks like a commercial release (Dick's Picks, Road
+      Trips, MusicBrainz-tagged release, ``.tagcleaner-skip`` marker).
 
     When the file is already fully tagged AND its ALBUM already equals
     our planned album, the file is left untouched.
     """
     ext = plan.dest.suffix.lower()
+    # Path-level skip first (cheap — no file open required).
+    if _looks_like_official_release(plan.dest.parent, None):
+        return False, False, True
     if ext == ".flac":
         audio = FLAC(str(plan.dest))
+        if _looks_like_official_release(plan.dest.parent, audio.keys()):
+            return False, False, True
         if _is_already_tagged(plan, audio):
             if _existing_album(audio) == plan.album:
-                return False, True
+                return False, True, False
             audio["ALBUM"] = plan.album
             audio.save()
-            return True, True
+            return True, True, False
         audio["ARTIST"] = plan.artist
         audio["ALBUMARTIST"] = plan.artist
         audio["ALBUM"] = plan.album
@@ -260,7 +311,7 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool]:
                     if k in audio:
                         del audio[k]
         audio.save()
-        return True, False
+        return True, False, False
     if ext == ".mp3":
         try:
             audio = EasyID3(str(plan.dest))
@@ -269,12 +320,14 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool]:
             mp3.add_tags()
             mp3.save()
             audio = EasyID3(str(plan.dest))
+        if _looks_like_official_release(plan.dest.parent, audio.keys()):
+            return False, False, True
         if _is_already_tagged(plan, audio):
             if _existing_album(audio) == plan.album:
-                return False, True
+                return False, True, False
             audio["album"] = plan.album
             audio.save()
-            return True, True
+            return True, True, False
         audio["artist"] = plan.artist
         audio["albumartist"] = plan.artist
         audio["album"] = plan.album
@@ -288,18 +341,20 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool]:
             if plan.disc is not None and plan.disc_total is not None:
                 audio["discnumber"] = f"{plan.disc}/{plan.disc_total}"
         audio.save()
-        return True, False
+        return True, False, False
     if ext in (".wav", ".wave"):
         audio = WAVE(str(plan.dest))
         if audio.tags is None:
             audio.add_tags()
+        if _looks_like_official_release(plan.dest.parent, audio.tags.keys() if audio.tags else None):
+            return False, False, True
         view = _Id3View(audio.tags)
         if _is_already_tagged(plan, view):
             if _existing_album(view) == plan.album:
-                return False, True
+                return False, True, False
             audio.tags["TALB"] = TALB(encoding=3, text=plan.album)
             audio.save()
-            return True, True
+            return True, True, False
         audio.tags["TPE1"] = TPE1(encoding=3, text=plan.artist)
         audio.tags["TPE2"] = TPE2(encoding=3, text=plan.artist)
         audio.tags["TALB"] = TALB(encoding=3, text=plan.album)
@@ -315,18 +370,20 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool]:
             elif plan.track is not None and "TPOS" in audio.tags:
                 del audio.tags["TPOS"]
         audio.save()
-        return True, False
+        return True, False, False
     if ext == ".m4a" or ext == ".m4b":
         audio = MP4(str(plan.dest))
         if audio.tags is None:
             audio.add_tags()
+        if _looks_like_official_release(plan.dest.parent, audio.tags.keys() if audio.tags else None):
+            return False, False, True
         view = _Mp4View(audio.tags)
         if _is_already_tagged(plan, view):
             if _existing_album(view) == plan.album:
-                return False, True
+                return False, True, False
             audio.tags["\xa9alb"] = [plan.album]
             audio.save()
-            return True, True
+            return True, True, False
         audio.tags["\xa9ART"] = [plan.artist]
         audio.tags["aART"] = [plan.artist]
         audio.tags["\xa9alb"] = [plan.album]
@@ -342,19 +399,21 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool]:
             elif plan.track is not None and "disk" in audio.tags:
                 del audio.tags["disk"]
         audio.save()
-        return True, False
+        return True, False, False
     if ext in (".ogg", ".opus", ".oga"):
         # .ogg can hold Vorbis or Opus (or FLAC) — let mutagen sniff it.
         # All Ogg variants expose Vorbis comments via dict-style access.
         audio = MutagenFile(str(plan.dest))
         if audio is None or not isinstance(audio, (OggVorbis, OggOpus)):
             raise RuntimeError(f"unsupported ogg variant for {plan.dest}")
+        if _looks_like_official_release(plan.dest.parent, audio.keys()):
+            return False, False, True
         if _is_already_tagged(plan, audio):
             if _existing_album(audio) == plan.album:
-                return False, True
+                return False, True, False
             audio["ALBUM"] = plan.album
             audio.save()
-            return True, True
+            return True, True, False
         audio["ARTIST"] = plan.artist
         audio["ALBUMARTIST"] = plan.artist
         audio["ALBUM"] = plan.album
@@ -373,7 +432,7 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool]:
                     if k in audio:
                         del audio[k]
         audio.save()
-        return True, False
+        return True, False, False
     raise RuntimeError(f"unsupported audio format: {ext}")
 
 

@@ -472,6 +472,84 @@ class TestAlreadyTaggedSkip:
         assert f["TRACKNUMBER"] == ["42"]
 
 
+class TestOfficialReleaseSkip:
+    """Folders that look like commercial releases (Dick's Picks, Road
+    Trips, MusicBrainz-tagged releases, ``.tagcleaner-skip`` marker)
+    are left untouched — the tagger reports skipped_official=True and
+    writes nothing."""
+
+    def test_marker_file_skips_folder(self, tmp_path: Path, make_flac):
+        folder = tmp_path / "Some Pristine Album"
+        audio = make_flac(folder / "01.flac")
+        (folder / ".tagcleaner-skip").write_text("", encoding="utf-8")
+        # Pre-existing tags that DON'T match the plan — would normally be
+        # overwritten by the value-match path.
+        pre = FLAC(str(audio))
+        pre["ARTIST"] = "Original Artist"
+        pre["ALBUM"] = "Original Album"
+        pre.save()
+        tracks = [Track(number=1, title="T")]
+        plans = build_plans(_concert(folder, [audio], tracks), minimal=True)
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert results[0].skipped_official is True
+        assert results[0].changed is False
+        f = FLAC(str(audio))
+        assert f["ARTIST"] == ["Original Artist"]
+        assert f["ALBUM"] == ["Original Album"]
+
+    def test_dicks_picks_path_skipped(self, tmp_path: Path, make_flac):
+        folder = tmp_path / "Grateful Dead - 02_03_78 Dick's Picks, Vol. 18"
+        audio = make_flac(folder / "01.flac")
+        pre = FLAC(str(audio))
+        pre["ARTIST"] = "The Grateful Dead"
+        pre["ALBUM"] = "Dick's Picks Vol. 18"
+        pre.save()
+        tracks = [Track(number=1, title="T")]
+        plans = build_plans(_concert(folder, [audio], tracks), minimal=True)
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert results[0].skipped_official is True
+        f = FLAC(str(audio))
+        assert f["ALBUM"] == ["Dick's Picks Vol. 18"]
+
+    def test_road_trips_path_skipped(self, tmp_path: Path, make_flac):
+        folder = tmp_path / "Grateful Dead - Road Trips Vol 4 No 2"
+        audio = make_flac(folder / "01.flac")
+        pre = FLAC(str(audio))
+        pre["ARTIST"] = "The Grateful Dead"
+        pre["ALBUM"] = "Road Trips Vol 4 No 2"
+        pre.save()
+        tracks = [Track(number=1, title="T")]
+        plans = build_plans(_concert(folder, [audio], tracks), minimal=True)
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert results[0].skipped_official is True
+
+    def test_musicbrainz_releasetrackid_skipped(self, tmp_path: Path, make_flac):
+        # No special folder name, but MUSICBRAINZ_RELEASETRACKID present —
+        # someone matched this file to an official MB release. Leave alone.
+        folder = tmp_path / "Some Show"
+        audio = make_flac(folder / "01.flac")
+        pre = FLAC(str(audio))
+        pre["ARTIST"] = "Original Artist"
+        pre["ALBUM"] = "Original Album"
+        pre["MUSICBRAINZ_RELEASETRACKID"] = "11111111-1111-1111-1111-111111111111"
+        pre.save()
+        tracks = [Track(number=1, title="T")]
+        plans = build_plans(_concert(folder, [audio], tracks), minimal=True)
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert results[0].skipped_official is True
+
+    def test_normal_folder_not_skipped(self, tmp_path: Path, make_flac):
+        # Sanity: a normal bootleg folder still gets tagged.
+        folder = tmp_path / "1999-12-31 Madison Square Garden"
+        audio = make_flac(folder / "01.flac")
+        tracks = [Track(number=1, title="T")]
+        plans = build_plans(_concert(folder, [audio], tracks), minimal=True)
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert results[0].skipped_official is False
+        f = FLAC(str(audio))
+        assert f["ARTIST"] == ["Test Artist"]
+
+
 class TestMinimalTags:
     """--minimal-tags writes only ARTIST/ALBUMARTIST/ALBUM/TRACKNUMBER and
     leaves any existing DATE/TITLE/DISC tags alone."""
