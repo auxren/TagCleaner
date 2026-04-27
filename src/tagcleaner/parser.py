@@ -982,7 +982,10 @@ _EMBEDDED_DATE_SHAPE = re.compile(
 _VENUE_KEYWORDS = re.compile(
     r"\b(?:arena|stadium|amphitheat(?:re|er)|coliseum|colosseum|"
     r"cent(?:er|re)|theat(?:re|er)|auditorium|hall|club|pavilion|"
-    r"fairgrounds?|civic|gardens?|grounds?|bowl|palace|"
+    # `fairgrounds` and the plural `grounds` only — singular `ground`
+    # alone gets used as a band-name word ("Solid Ground", "Common
+    # Ground", "Higher Ground") that we don't want to flag as venue.
+    r"fairgrounds|civic|gardens|grounds|bowl|palace|"
     r"rink|ballroom|casino|university|college|dome|forum|lounge|"
     r"speedway|festival|tabernacle)\b",
     re.I,

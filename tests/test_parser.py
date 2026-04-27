@@ -862,6 +862,24 @@ class TestProseAndLineageRejection:
         )
 
 
+class TestVenueKeywordsTightened:
+    """Singular ``ground`` was a band-name word (`Solid Ground`,
+    `Common Ground`, `Higher Ground`) that the venue regex used to
+    flag, sending the line to /dev/null and the parser to a worse
+    candidate. Only plural `grounds` and `fairgrounds` should match."""
+
+    @pytest.mark.parametrize("line", [
+        "JIMMY PAGE with Solid Ground",
+        "Common Ground",
+        "Higher Ground",
+        "Sweet Holy Ground",
+    ])
+    def test_band_name_with_ground_not_rejected(self, line):
+        body = f"{line}\n01. Song\n"
+        out = parse_info_txt(body)
+        assert out.get("artist") == line
+
+
 class TestPersonnelCreditRejection:
     """Musician-credit lines like ``Tom Petty—guitar, vocals`` and
     ``Bruce Springsteen (vocals, guitar, harmonica)`` are personnel
