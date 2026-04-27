@@ -862,6 +862,44 @@ class TestProseAndLineageRejection:
         )
 
 
+class TestLabeledFieldNotInProse:
+    """The labeled-field regex (``^venue:\\s*(.+)$``) used to match the
+    word ``venue`` mid-sentence — ``let's talk about the venue --
+    Manny's Carwash was a TINY TINY place ...`` — and capture the rest
+    of the paragraph as the venue value. Anchor to start of line."""
+
+    def test_venue_word_in_prose_not_captured(self):
+        body = (
+            "Merl Saunders And The Rainforest Band\n"
+            "Manny's Carwash\n"
+            "New York, NY\n"
+            "10/22/1996\n"
+            "\n"
+            "So what is it about this show?  Well, first off, it's Merl "
+            "Saunders. Setting the stage even more, let's talk about the "
+            "venue -- Manny's Carwash was a TINY TINY place (it held "
+            "maybe 150 people?) on the Upper East Side which is also now "
+            "just a memory.\n"
+            "\n"
+            "01. Sister Sadie\n"
+        )
+        out = parse_info_txt(body)
+        # Venue should be the line-2 value, not the prose paragraph.
+        assert out.get("venue") == "Manny's Carwash"
+        assert "TINY TINY" not in (out.get("venue") or "")
+
+    def test_artist_word_in_prose_not_captured(self):
+        body = (
+            "Some Real Artist\n"
+            "1999-01-01\n"
+            "\n"
+            "The artist - in this case - was on top of his game.\n"
+            "01. Song\n"
+        )
+        out = parse_info_txt(body)
+        assert out.get("artist") == "Some Real Artist"
+
+
 class TestVenueKeywordsTightened:
     """Singular ``ground`` was a band-name word (`Solid Ground`,
     `Common Ground`, `Higher Ground`) that the venue regex used to

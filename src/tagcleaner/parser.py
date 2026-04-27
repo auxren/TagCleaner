@@ -817,16 +817,19 @@ def parse_info_txt(body: str) -> dict:
     if artist:
         data["artist"] = artist
 
-    # Labeled fields take priority.
+    # Labeled fields take priority. Anchor each pattern to the start of
+    # a line (re.MULTILINE) so we don't match the label word inside
+    # prose sentences — "let's talk about the venue -- Manny's Carwash
+    # was a TINY TINY place..." used to be parsed as a venue value.
     for pat, key in [
-        (r"artist\s*[:\-]\s*(.+)", "artist"),
-        (r"band\s*[:\-]\s*(.+)", "artist"),
-        (r"venue\s*[:\-]\s*(.+)", "venue"),
-        (r"location\s*[:\-]\s*(.+)", "venue"),
-        (r"city\s*[:\-]\s*(.+)", "city"),
-        (r"date\s*[:\-]\s*(.+)", "_datetxt"),
+        (r"^artist\s*[:\-]\s*(.+)", "artist"),
+        (r"^band\s*[:\-]\s*(.+)", "artist"),
+        (r"^venue\s*[:\-]\s*(.+)", "venue"),
+        (r"^location\s*[:\-]\s*(.+)", "venue"),
+        (r"^city\s*[:\-]\s*(.+)", "city"),
+        (r"^date\s*[:\-]\s*(.+)", "_datetxt"),
     ]:
-        m = re.search(pat, body, re.I)
+        m = re.search(pat, body, re.I | re.MULTILINE)
         if m:
             val = m.group(1).strip().strip(",")
             if not val:
