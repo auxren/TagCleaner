@@ -862,6 +862,40 @@ class TestProseAndLineageRejection:
         )
 
 
+class TestAllCapsBannerNotArtist:
+    """Bootleg banner titles like ``SEE IF WE CAN WAKE UP EDDIE`` (often
+    written with leading dashes, ``--SEE IF WE CAN WAKE UP EDDIE``)
+    survived the existing prose check. ALL-CAPS lines with 4+ words are
+    almost always banners, not artist names."""
+
+    def test_all_caps_banner_falls_to_parent(self, tmp_path: Path, make_flac):
+        # Wrap in /Tapes/ so parent-trust stops at the library root.
+        root = tmp_path / "Tapes"
+        root.mkdir()
+        folder = root / "Neil Young & Pearl Jam" / "1995-06-24 Polo Fields"
+        folder.mkdir(parents=True)
+        audio = [make_flac(folder / "01.flac")]
+        body = (
+            "--SEE IF WE CAN WAKE UP EDDIE\n"
+            "Polo Fields\n"
+            "1995-06-24\n"
+            "01. The Test Song\n"
+        )
+        info = folder / "info.txt"
+        info.write_text(body, encoding="utf-8")
+        c = build_concert(folder, audio, info)
+        # Parent-trust should win — banner shouldn't survive.
+        assert c.artist == "Neil Young & Pearl Jam"
+
+    @pytest.mark.parametrize("short_name", [
+        "AC/DC", "ELP", "ABBA", "STS9",
+    ])
+    def test_short_all_caps_artist_kept(self, short_name):
+        body = f"{short_name}\n01. Song\n"
+        out = parse_info_txt(body)
+        assert out.get("artist") == short_name
+
+
 class TestLeadingSequenceNumberStripped:
     """Folders like ``01 Godcaster - 2024-10-23 Boston MA`` and
     ``02 Osees - 2024-10-23 Boston MA`` (opener / headliner sequencing)

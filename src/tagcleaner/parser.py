@@ -1158,6 +1158,10 @@ def _looks_like_prose_artist(candidate: str) -> bool:
         names we've seen top out around "The Nitty Gritty Dirt Band Featuring
         John Denver" — 48 chars).
       * 5+ words AND contains a common sentence verb / connector.
+      * 4+ words AND mostly uppercase (>70% of letters are uppercase) —
+        bootleg banner titles like ``SEE IF WE CAN WAKE UP EDDIE``.
+        Short all-caps names (AC/DC, ELP, ABBA) are unaffected because
+        they have <4 words.
     """
     if not candidate:
         return False
@@ -1169,6 +1173,12 @@ def _looks_like_prose_artist(candidate: str) -> bool:
         return True
     if len(words) >= 5 and _PROSE_VERB_TOKEN.search(c):
         return True
+    if len(words) >= 4:
+        letters = [ch for ch in c if ch.isalpha()]
+        if letters:
+            upper = sum(1 for ch in letters if ch.isupper())
+            if upper / len(letters) > 0.7:
+                return True
     return False
 
 
