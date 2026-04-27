@@ -862,6 +862,44 @@ class TestProseAndLineageRejection:
         )
 
 
+class TestPersonnelCreditRejection:
+    """Musician-credit lines like ``Tom Petty—guitar, vocals`` and
+    ``Bruce Springsteen (vocals, guitar, harmonica)`` are personnel
+    rosters, not artist headers. They used to leak as ARTIST."""
+
+    @pytest.mark.parametrize("credit_line", [
+        "Tom Petty—guitar and lead vocals (except where noted)",
+        "Bruce Springsteen (vocals, guitar, harmonica)",
+        "John Wetton - bass & lead vocals",
+        "Carl Palmer - drums",
+        "Jimi Hendrix (lead guitar)",
+    ])
+    def test_credit_line_not_artist(self, credit_line):
+        body = f"{credit_line}\nThe Real Artist\n01. Song\n"
+        out = parse_info_txt(body)
+        assert out.get("artist") == "The Real Artist"
+
+
+class TestParentheticalStrip:
+    """Trailing parentheticals like ``(opening for Deep Purple)`` or
+    ``("Acoustic Reckoning")`` should be stripped from clean artist
+    lines so the canonical artist name lands in tags."""
+
+    @pytest.mark.parametrize("line,expected", [
+        ("Mountain (opening for Deep Purple)", "Mountain"),
+        ("CSNY (Opening act for Blind Faith)", "CSNY"),
+        ('Gillian Welch & Dave Rawlings ("Acoustic Reckoning")',
+         "Gillian Welch & Dave Rawlings"),
+        # Multiple parens — only strip the trailing one.
+        ("Trans-Siberian Orchestra (West)",
+         "Trans-Siberian Orchestra"),
+    ])
+    def test_strip_trailing_paren(self, line, expected):
+        body = f"{line}\n01. Song\n"
+        out = parse_info_txt(body)
+        assert out.get("artist") == expected
+
+
 class TestMonthDayNotArtist:
     """A line like ``April 7, 2017`` had its head ``April 7`` salvaged
     as the artist. Reject month-day pairs in the salvage path."""

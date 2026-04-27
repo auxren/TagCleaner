@@ -1074,6 +1074,11 @@ def _first_artist_line(nonblank: list[str]) -> str | None:
         # multi-word labels like "Recording source", "Taping equipment".
         if _is_metadata_label_line(stripped):
             continue
+        # Musician-credit lines — "Tom Petty — guitar, vocals" — appear
+        # in the personnel roster section of nearly every taper note.
+        # Without this filter they leak as ARTIST tags.
+        if _is_personnel_credit(stripped):
+            continue
         # Lines that begin with multiple quoted song titles —
         # "“Warm Ways,” “Over My Head,” …" — are setlist enumerations.
         # Match two consecutive quoted phrases (any quote variant).
@@ -1101,6 +1106,14 @@ def _first_artist_line(nonblank: list[str]) -> str | None:
         # "Venue, City, ST" three-comma shape — also a venue line.
         if _split_venue_city_region(stripped)[0]:
             continue
+        # Strip a trailing "(...)" parenthetical context — "Mountain
+        # (opening for Deep Purple)" → "Mountain". Only when the head
+        # before the paren is a clean artist-shape (≥2 chars, alphabetic).
+        cleaned = _TRAILING_PAREN_RE.sub("", stripped).strip()
+        if cleaned != stripped and 2 <= len(cleaned) <= 60 and re.match(
+            r"^[A-Z]", cleaned
+        ):
+            stripped = cleaned
         return _strip_date_suffix(stripped)
     return None
 
@@ -1170,6 +1183,34 @@ def _is_metadata_label_line(s: str) -> bool:
     """True if *s* starts with a Title-cased labeled metadata prefix
     like ``Recording source:``, ``Transfer:`` or ``Sound quality:``."""
     return bool(_METADATA_LABEL_RE.match(s))
+
+
+# Personnel-credit shape: "<Name> [— / - / (] (extra word){0,3}
+# (guitar|vocals|...)". Catches the musician-roster lines that taper
+# notes always include and that used to leak into ARTIST tags:
+# "Tom Petty—guitar and lead vocals", "Bruce Springsteen (vocals,
+# guitar, harmonica)", "John Wetton - bass & lead vocals".
+_PERSONNEL_CREDIT = re.compile(
+    r"^[A-Z][\w\s.,'&\"]+?\s*[—\-(]\s*"
+    r"(?:[a-z]+\s+){0,3}"
+    r"(?:guitars?|vocals?|drums?|bass|keyboards?|piano|organ|"
+    r"saxophone|sax|harmonica|violin|cello|mandolin|banjo|"
+    r"trumpet|trombone|percussion|backing|lead\s+vocals?|"
+    r"rhythm\s+guitar|lead\s+guitar)\b",
+    re.I,
+)
+
+
+def _is_personnel_credit(s: str) -> bool:
+    """True if *s* looks like a musician-credit line —
+    ``Tom Petty — guitar``, ``Bruce Springsteen (vocals, guitar)``."""
+    return bool(_PERSONNEL_CREDIT.match(s))
+
+
+# Parenthetical context that should be stripped from an otherwise-clean
+# artist line: "(opening for Deep Purple)", "(with Ginger Baker)",
+# "(special guest Stevie Wonder)", "(Acoustic Reckoning)".
+_TRAILING_PAREN_RE = re.compile(r"\s*\([^)]*\)\s*$")
 
 
 _MONTH_PREFIX = re.compile(
