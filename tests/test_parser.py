@@ -821,6 +821,39 @@ class TestTajMahalBolognaFixture:
         assert "background noise" not in album.lower()
 
 
+class TestArtistDateSuffixStrip:
+    """Strip ``" - <date>"`` tails from extracted artist strings:
+    ``Robert Plant - December 13`` → ``Robert Plant``,
+    ``Bob Dylan - 1966`` → ``Bob Dylan``. Real-world bug: long taper
+    headers got salvaged before the comma but kept ``" - <month-day>"``
+    suffix."""
+
+    @pytest.mark.parametrize("body,expected", [
+        # Long header line, hits comma-salvage; tail begins with month
+        # name → should strip.
+        ("Robert Plant - December 13, 1983 (SBD - 'Treat Her Right' "
+         "Liberated Bootleg - with Jimmy Page guesting) Hammersmith "
+         "Odeon, London, U.K.\n\n01. First\n",
+         "Robert Plant"),
+        # Numeric-date suffix in salvage path.
+        ("Bruce Springsteen - 11-16-1990, Shrine Auditorium\n01. T\n",
+         "Bruce Springsteen"),
+    ])
+    def test_strip_date_suffix(self, body, expected):
+        out = parse_info_txt(body)
+        assert out.get("artist") == expected
+
+    @pytest.mark.parametrize("clean", [
+        # Real artist names with " - " in them — must be preserved.
+        "Crosby - Stills - Nash",
+        "Eric Clapton and Dr. John",
+    ])
+    def test_clean_artist_unchanged(self, clean):
+        body = f"{clean}\n01. First Song\n"
+        out = parse_info_txt(body)
+        assert out.get("artist") == clean
+
+
 class TestRichFirstLineSalvage:
     """`Artist, City-Region, date, source, ...` is a common etree / taper
     header shape. The artist lives before the first comma — salvage it

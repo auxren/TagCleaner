@@ -1070,7 +1070,7 @@ def _first_artist_line(nonblank: list[str]) -> str | None:
         # "Venue, City, ST" three-comma shape — also a venue line.
         if _split_venue_city_region(stripped)[0]:
             continue
-        return stripped
+        return _strip_date_suffix(stripped)
     return None
 
 
@@ -1115,6 +1115,36 @@ def _looks_like_prose_artist(candidate: str) -> bool:
     return False
 
 
+_MONTH_PREFIX = re.compile(
+    r"^\s*(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|"
+    r"Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Sept|Oct(?:ober)?|"
+    r"Nov(?:ember)?|Dec(?:ember)?)\b",
+    re.I,
+)
+_NUMERIC_DATE_PREFIX = re.compile(r"^\s*\d{1,4}[-./]")
+
+
+def _strip_date_suffix(s: str) -> str:
+    """If *s* has a `" - "` separator followed by a date-shaped tail
+    (month name, year, or numeric date), return the clean head — else
+    return *s* unchanged. Catches ``"Robert Plant - December 13"`` →
+    ``"Robert Plant"``.
+    """
+    if not s or " - " not in s:
+        return s
+    head, tail = s.split(" - ", 1)
+    head = head.strip()
+    if not head:
+        return s
+    tail_lstripped = tail.lstrip(" \t-_,.")
+    if (parse_date(tail_lstripped[:40]) or
+            _MONTH_PREFIX.match(tail_lstripped) or
+            _NUMERIC_DATE_PREFIX.match(tail_lstripped) or
+            re.match(r"^(?:19|20)\d{2}", tail_lstripped)):
+        return head
+    return s
+
+
 def _salvage_artist_before_comma(line: str) -> str | None:
     """Return the clean artist token from a noisy ``Artist, City, date,
     source`` header, or None if the head before the first comma doesn't
@@ -1143,6 +1173,10 @@ def _salvage_artist_before_comma(line: str) -> str | None:
     head = line.split(",", 1)[0].strip("*#=-_ \t")
     if not head:
         return None
+    # Strip a trailing " - <date>" before applying the strict filters —
+    # ``Robert Plant - December 13`` and
+    # ``Bruce Springsteen - 11-16-1990`` should yield the artist alone.
+    head = _strip_date_suffix(head)
     letters = sum(ch.isalpha() for ch in head)
     if letters < 2:
         return None
@@ -1165,7 +1199,7 @@ def _salvage_artist_before_comma(line: str) -> str | None:
         return None
     if _looks_like_city(head):
         return None
-    return head
+    return _strip_date_suffix(head)
 
 
 def _looks_like_venue(line: str) -> bool:
