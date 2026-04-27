@@ -1316,6 +1316,16 @@ def _salvage_artist_before_comma(line: str) -> str | None:
     return _strip_date_suffix(head)
 
 
+_ATTRIBUTION_CREDIT_RE = re.compile(
+    r"^(?:taped|recorded|recorded|tracked|seeded|mastered|"
+    r"transferred|transfer|edited|mixed|engineered|produced|"
+    r"presented|uploaded|shared|posted|encoded|ripped)"
+    r"(?:\s*&\s*\w+)?"  # Allow "&" connector: "Tracked & Seeded by ..."
+    r"\s+(?:by|on)\b",
+    re.I,
+)
+
+
 def _looks_like_venue(line: str) -> bool:
     """Very loose filter for lines that could name a venue. Bails out on
     obvious boilerplate (audiochecker logs, lineage lines, URLs, etc.)."""
@@ -1326,6 +1336,17 @@ def _looks_like_venue(line: str) -> bool:
     if _NON_VENUE_PREFIX.match(line):
         return False
     if _LINEAGE_CHAIN.search(line):
+        return False
+    # Attribution credits — "Taped by Joe Blow", "Tracked & Seeded by
+    # Bill Graves", "Mastered by Engineer X". Not venues.
+    if _ATTRIBUTION_CREDIT_RE.match(line):
+        return False
+    # Personnel-credit lines ("Tom Petty — guitar, vocals") aren't
+    # venues either.
+    if _is_personnel_credit(line):
+        return False
+    # Metadata-label lines ("Source: SBD", "Recording source: ...").
+    if _is_metadata_label_line(line):
         return False
     if re.search(r"\d{5,}", line):
         return False

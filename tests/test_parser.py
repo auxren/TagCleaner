@@ -862,6 +862,30 @@ class TestProseAndLineageRejection:
         )
 
 
+class TestAttributionCreditNotVenue:
+    """Lines like ``Tracked & Seeded by Bill Graves`` and ``Taped by
+    Joe Blow`` were accepted as venue values by ``_looks_like_venue``,
+    leaking into ALBUM tags as ``2002-11-03 Tracked & Seeded by Bill
+    Graves, ...``."""
+
+    def test_credit_line_not_venue(self):
+        body = (
+            "Les Claypool's Fearless Flying Frog Brigade\n"
+            "11/3/2002\n"
+            "Lupo's Heartbreak Hotel - Providence, RI\n"
+            "\n"
+            "Source: AKG > DA-P1\n"
+            "Taped by George Johnson\n"
+            "Tracked & Seeded by Bill Graves\n"
+            "01. Crowd / Tuning\n"
+        )
+        out = parse_info_txt(body)
+        v = out.get("venue") or ""
+        assert "Tracked" not in v
+        assert "Seeded" not in v
+        assert "Taped" not in v
+
+
 class TestLabeledFieldNotInProse:
     """The labeled-field regex (``^venue:\\s*(.+)$``) used to match the
     word ``venue`` mid-sentence — ``let's talk about the venue --
