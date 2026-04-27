@@ -821,6 +821,39 @@ class TestTajMahalBolognaFixture:
         assert "background noise" not in album.lower()
 
 
+class TestProseAndLineageRejection:
+    """Real-world bogus ARTIST values that the parser used to write to
+    every track in a folder, sourced from Plex's library DB.
+    Each test case is a line that previously made it past
+    ``_first_artist_line``."""
+
+    @pytest.mark.parametrize("bad_line", [
+        # Lineage chain — "Transfer: SDHC > WAV > FLAC".
+        "Transfer: miniSDHC card > wav file > Sound Studio (16/44.1) > xACT > FLAC (level 8)",
+        # Contractions — taper notes.
+        "We're all looking for upgrades, alternate sources, & uncirculated Robert Plant shows.",
+        "I'm not sure of the exact lineage, but it sounds great.",
+        # Interrogative prose.
+        "What I mean by this is people get tanked at bar shows and don't listen to the music.",
+        # Quoted-song-list opener.
+        "“Warm Ways,” “Over My Head,” “Say You Love Me,” “Over and Over” and “Songbird,” just for starters.",
+        # Source / lineage labeled lines (technical notes).
+        "Source: Schoeps MK4 > Sony PCM-M10 > FLAC",
+        "Recorded by: Joe Blow (June 5, 2018)",
+        "Lineage: cassette > Nakamichi > FLAC",
+        # "From bootleg ..." attribution.
+        "From bootleg; \"The Happiest Night Of Our Lives\", manufactured by Comunidad Floydiana in Chile.",
+    ])
+    def test_bogus_line_followed_by_real_artist(self, bad_line):
+        # Bad line first, real artist on line 2 — parser must skip the bad
+        # line and return the real artist.
+        body = f"{bad_line}\nThe Real Artist Name\n01. First Song\n"
+        out = parse_info_txt(body)
+        assert out.get("artist") == "The Real Artist Name", (
+            f"line {bad_line!r} leaked through as artist {out.get('artist')!r}"
+        )
+
+
 class TestArtistDateSuffixStrip:
     """Strip ``" - <date>"`` tails from extracted artist strings:
     ``Robert Plant - December 13`` → ``Robert Plant``,

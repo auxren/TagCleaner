@@ -947,7 +947,18 @@ _SENTENCE_OPENER = re.compile(
     # word class (descriptor before a noun).
     r"an?\s+(?:interesting|excellent|incredible|amazing|great|wonderful|"
     r"awesome|fantastic|beautiful|nice|good|decent|solid|killer|"
-    r"classic|rare|unique|special|legendary|superb|fine))\b",
+    r"classic|rare|unique|special|legendary|superb|fine)|"
+    # Contractions and interrogatives — clear prose openers in taper
+    # notes. "We're all looking for upgrades", "What I mean by this",
+    # "I'm not sure of the source", "You'll hear some hiss".
+    r"we['’](?:re|ve|ll|d)|"
+    r"i['’](?:m|ve|ll|d)|"
+    r"you['’](?:re|ve|ll|d)|"
+    r"(?:what|where|when|why|how|who)\s+(?:i|we|you|they|the|this|that|"
+    r"is|was|are|were|to|do|did|can|could|should|would)|"
+    # Common credit/sentence openings.
+    r"from\s+(?:bootleg|tape|cassette|cd|the|a)|"
+    r"audience\s+recording|complete\s+show|partial\s+show)\b",
     re.I,
 )
 
@@ -1050,6 +1061,27 @@ def _first_artist_line(nonblank: list[str]) -> str | None:
         # These slip past _NOISE_FIRST_LINE because they start with an
         # arbitrary word but are never an artist name.
         if _SENTENCE_OPENER.match(stripped):
+            continue
+        # Lineage / signal-chain lines: "Transfer: SDHC > wav > FLAC".
+        # Without this filter they slip through as plausible-looking
+        # artists (well-formed words, capital starts, no source code).
+        if _LINEAGE_CHAIN.search(stripped):
+            continue
+        # Lines starting with a labeled metadata field (Transfer:, Lineage:,
+        # Source:, Recorded:) are technical notes, not artist names.
+        if re.match(
+            r"^(?:transfer|lineage|source|recorded(?:\s+by)?|"
+            r"taper|recording|seeded(?:\s+by)?|notes?)\s*[:\-]\s",
+            stripped, re.I,
+        ):
+            continue
+        # Lines that begin with multiple quoted song titles —
+        # "“Warm Ways,” “Over My Head,” …" — are setlist enumerations.
+        # Match two consecutive quoted phrases (any quote variant).
+        if re.match(
+            r'^[\"“][^\"”]{2,80}[\"”][^\"“]{1,5}[\"“]',
+            stripped,
+        ):
             continue
         if _SOURCE_CODE_TOKEN.search(stripped):
             salvaged = _salvage_artist_before_comma(stripped)
