@@ -1067,13 +1067,12 @@ def _first_artist_line(nonblank: list[str]) -> str | None:
         # artists (well-formed words, capital starts, no source code).
         if _LINEAGE_CHAIN.search(stripped):
             continue
-        # Lines starting with a labeled metadata field (Transfer:, Lineage:,
-        # Source:, Recorded:) are technical notes, not artist names.
-        if re.match(
-            r"^(?:transfer|lineage|source|recorded(?:\s+by)?|"
-            r"taper|recording|seeded(?:\s+by)?|notes?)\s*[:\-]\s",
-            stripped, re.I,
-        ):
+        # Lines starting with a labeled metadata field — "Transfer:",
+        # "Recording source:", "Sound quality:", "Taping gear:", etc.
+        # Match `<TitleCase prefix>:` where the prefix contains one of
+        # the known label words. Up to 3 words before the colon allows
+        # multi-word labels like "Recording source", "Taping equipment".
+        if _is_metadata_label_line(stripped):
             continue
         # Lines that begin with multiple quoted song titles —
         # "“Warm Ways,” “Over My Head,” …" — are setlist enumerations.
@@ -1145,6 +1144,29 @@ def _looks_like_prose_artist(candidate: str) -> bool:
     if len(words) >= 5 and _PROSE_VERB_TOKEN.search(c):
         return True
     return False
+
+
+# Words that, when found in a labeled prefix `Foo Bar:`, mark the line
+# as technical metadata not an artist. Match against the lower-cased
+# prefix as a substring — covers "Recording source:", "Transfer info:",
+# "Sound quality:", "Tape source:", "Taping gear:", etc.
+_METADATA_LABEL_WORDS = (
+    "source", "transfer", "lineage", "recording", "recorded",
+    "taper", "taping", "seeded", "info", "gear", "equipment",
+    "quality", "format", "encode", "encoded", "ripped", "lineage",
+    "playback", "noise", "track[\\s-]*list", "track\\s*split",
+    "uploaded", "shared", "originally",
+)
+_METADATA_LABEL_RE = re.compile(
+    r"^[A-Z][^:\n]{0,40}(?:" + "|".join(_METADATA_LABEL_WORDS) + r")[^:\n]{0,15}:\s",
+    re.I,
+)
+
+
+def _is_metadata_label_line(s: str) -> bool:
+    """True if *s* starts with a Title-cased labeled metadata prefix
+    like ``Recording source:``, ``Transfer:`` or ``Sound quality:``."""
+    return bool(_METADATA_LABEL_RE.match(s))
 
 
 _MONTH_PREFIX = re.compile(

@@ -841,6 +841,11 @@ class TestProseAndLineageRejection:
         "Source: Schoeps MK4 > Sony PCM-M10 > FLAC",
         "Recorded by: Joe Blow (June 5, 2018)",
         "Lineage: cassette > Nakamichi > FLAC",
+        # Multi-word metadata labels — "Recording source:", "Sound quality:".
+        "Recording source: Soundboard",
+        "Sound quality: Excellent",
+        "Transfer source: my cassette to PC",
+        "Taping gear: Schoeps MK4 / Nakamichi 550",
         # "From bootleg ..." attribution.
         "From bootleg; \"The Happiest Night Of Our Lives\", manufactured by Comunidad Floydiana in Chile.",
     ])
