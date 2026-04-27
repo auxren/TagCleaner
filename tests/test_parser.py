@@ -862,6 +862,22 @@ class TestProseAndLineageRejection:
         )
 
 
+class TestLeadingSequenceNumberStripped:
+    """Folders like ``01 Godcaster - 2024-10-23 Boston MA`` and
+    ``02 Osees - 2024-10-23 Boston MA`` (opener / headliner sequencing)
+    used to produce artists ``01 Godcaster`` / ``02 Osees``. Strip
+    the leading 1-3 digit prefix when followed by whitespace + letter."""
+
+    @pytest.mark.parametrize("folder,expected", [
+        ("01 Godcaster - 2024-10-23 Boston MA", "Godcaster"),
+        ("02 Osees - 2024-10-23 Boston MA", "Osees"),
+        # Real digit-prefixed band names with a comma — kept intact.
+        ("10,000 Maniacs - 1990-08-15 Show", "10,000 Maniacs"),
+    ])
+    def test_leading_sequence_stripped(self, folder, expected):
+        assert guess_artist_from_folder(folder) == expected
+
+
 class TestAttributionCreditNotVenue:
     """Lines like ``Tracked & Seeded by Bill Graves`` and ``Taped by
     Joe Blow`` were accepted as venue values by ``_looks_like_venue``,

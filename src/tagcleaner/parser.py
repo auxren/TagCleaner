@@ -302,10 +302,17 @@ def _first_date_position(text: str) -> int | None:
 def _clean_artist_candidate(text: str) -> str | None:
     """Normalise a raw 'everything before the date' string into an artist.
 
-    Strips leading/trailing separator junk, splits at the first ` - ` or
-    ` (`, and returns the first chunk if it looks plausibly like a band name.
+    Strips leading/trailing separator junk, leading sequencing numbers
+    (``01 Godcaster`` → ``Godcaster``), splits at the first ` - ` or
+    ` (`, and returns the first chunk if it looks plausibly like a
+    band name.
     """
     t = text.strip(" -,_()[]\t")
+    # Strip a leading 1-3 digit sequencing prefix ("01 Godcaster" →
+    # "Godcaster"). Used by tapers to order opener/headliner folders.
+    # Don't strip a digit-only or 4+ digit prefix (those are real
+    # band-name fragments like "311" or "10,000 Maniacs").
+    t = re.sub(r"^\d{1,3}\s+(?=[A-Za-z])", "", t)
     # Cut at the first ' - ' or ' (' so compound prefixes like
     # "Steel Pulse - The Palace, Hollywood" reduce to just "Steel Pulse".
     t = re.split(r"\s+-\s+|\s+\(", t, maxsplit=1)[0]
