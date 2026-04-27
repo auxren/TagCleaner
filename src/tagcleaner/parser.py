@@ -1158,7 +1158,10 @@ _METADATA_LABEL_WORDS = (
     "uploaded", "shared", "originally",
 )
 _METADATA_LABEL_RE = re.compile(
-    r"^[A-Z][^:\n]{0,40}(?:" + "|".join(_METADATA_LABEL_WORDS) + r")[^:\n]{0,15}:\s",
+    # Optional `<TitleCase prefix> ` before the keyword. Lets bare
+    # ``Taper:`` match alongside multi-word ``Recording source:``.
+    r"^(?:[A-Z][^:\n]{0,40}\s+)?(?:" + "|".join(_METADATA_LABEL_WORDS)
+    + r")[^:\n]{0,15}:\s",
     re.I,
 )
 
@@ -1231,6 +1234,16 @@ def _salvage_artist_before_comma(line: str) -> str | None:
     # ``Robert Plant - December 13`` and
     # ``Bruce Springsteen - 11-16-1990`` should yield the artist alone.
     head = _strip_date_suffix(head)
+    # Reject heads that are just a month-day or a date by themselves —
+    # ``April 7`` from ``April 7, 2017``, ``December 13`` from
+    # ``December 13, 1983``. These slip past parse_date when truncated.
+    if re.fullmatch(
+        r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|"
+        r"Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Sept|"
+        r"Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2}",
+        head, re.I,
+    ):
+        return None
     letters = sum(ch.isalpha() for ch in head)
     if letters < 2:
         return None

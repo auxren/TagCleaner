@@ -828,6 +828,9 @@ class TestProseAndLineageRejection:
     ``_first_artist_line``."""
 
     @pytest.mark.parametrize("bad_line", [
+        # Bare labeled lines without prefix word.
+        "Taper:   unknown",
+        "Source: SBD",
         # Lineage chain — "Transfer: SDHC > WAV > FLAC".
         "Transfer: miniSDHC card > wav file > Sound Studio (16/44.1) > xACT > FLAC (level 8)",
         # Contractions — taper notes.
@@ -857,6 +860,24 @@ class TestProseAndLineageRejection:
         assert out.get("artist") == "The Real Artist Name", (
             f"line {bad_line!r} leaked through as artist {out.get('artist')!r}"
         )
+
+
+class TestMonthDayNotArtist:
+    """A line like ``April 7, 2017`` had its head ``April 7`` salvaged
+    as the artist. Reject month-day pairs in the salvage path."""
+
+    def test_april_7_rejected(self):
+        body = (
+            "32nd Annual Rock and Roll Hall of Fame Induction Ceremony\n"
+            "Barclays Center\n"
+            "Brooklyn, NY\n"
+            "April 7, 2017\n"
+            "01. First\n"
+        )
+        out = parse_info_txt(body)
+        # Real artist isn't extractable here (event-name in line 1 has venue
+        # keyword "Hall"); but "April 7" must NOT be set as artist.
+        assert out.get("artist") != "April 7"
 
 
 class TestArtistDateSuffixStrip:
