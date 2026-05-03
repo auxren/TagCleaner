@@ -1,6 +1,7 @@
 """Write Vorbis/ID3 tags to audio files. Three modes: dry-run, in-place, copy-to."""
 from __future__ import annotations
 
+import re
 import shutil
 from dataclasses import dataclass
 from enum import Enum
@@ -86,13 +87,27 @@ def build_plans(
         return audio
 
     if metadata_only:
-        for audio in concert.audio_files:
+        for index, audio in enumerate(concert.audio_files, start=1):
+            existing_track, existing_disc = _existing_track_disc(audio)
+            # Preserve any track/disc numbers already on the file (they may
+            # have come from a setlist-aware tagger like SongKong). Only fill
+            # in a track number when one is genuinely missing — but always
+            # fill *something* so Plex isn't left with a blank TRACKNUMBER.
+            if existing_track is not None:
+                track_num = None  # leave existing tag alone
+                disc_num = None
+            else:
+                fname_track, fname_disc = _track_disc_from_filename(audio.stem)
+                track_num = fname_track if fname_track is not None else index
+                disc_num = fname_disc
             plans.append(TagPlan(
                 file=audio,
                 dest=_dest(audio),
                 artist=artist,
                 album=album,
                 date=date,
+                track=track_num,
+                disc=disc_num,
                 minimal=minimal,
             ))
         return plans
@@ -111,6 +126,71 @@ def build_plans(
             minimal=minimal,
         ))
     return plans
+
+
+# Match `d1t01`, `D2T05`, `disc1track02`, `cd2-track-04` etc. — the etree
+# concert convention pins disc-track to the END of the filename stem
+# (after the date), so we anchor the right side rather than left.
+_DISC_TRACK_RE = re.compile(
+    r"(?:cd|disc|d)\s*(\d{1,2})\s*[._\-\s]*(?:track|t)\s*(\d{1,3})\s*$",
+    re.IGNORECASE,
+)
+# Leading track index: "01 - Title", "01. Title", "01_Title", "01-Title" — the
+# canonical concert-track filename. Limited to 1-3 digits so we don't pick up
+# years (e.g. "1992 something.flac").
+_LEADING_TRACK_RE = re.compile(r"^(\d{1,3})\s*[._\-\s]")
+
+
+def _existing_track_disc(audio: Path) -> tuple[int | None, int | None]:
+    """Read any existing TRACKNUMBER/DISCNUMBER off the file. Used in
+    metadata-only mode so we don't clobber tags written by a setlist-aware
+    tool (SongKong, beets) when we're only stamping concert metadata."""
+    try:
+        f = MutagenFile(str(audio))
+    except Exception:
+        return None, None
+    if f is None or f.tags is None:
+        return None, None
+    track = _tag_value(f.tags, "TRACKNUMBER", "tracknumber", "TRCK", "trkn")
+    disc = _tag_value(f.tags, "DISCNUMBER", "discnumber", "TPOS", "disk")
+    return _parse_int_prefix(track), _parse_int_prefix(disc)
+
+
+def _parse_int_prefix(s: str | None) -> int | None:
+    """Pull a leading integer out of e.g. '01', '01/12', '7'."""
+    if not s:
+        return None
+    m = re.match(r"\s*(\d+)", str(s))
+    return int(m.group(1)) if m else None
+
+
+def _track_disc_from_filename(stem: str) -> tuple[int | None, int | None]:
+    """Parse a track number (and optional disc number) out of a filename stem.
+
+    Returns ``(track, disc)`` — either may be ``None`` when not found.
+
+    Examples:
+      ``phil1959-04-05d1t01``  -> (1, 1)
+      ``gd72-08-27d2t05``      -> (5, 2)
+      ``01 - Sugaree``         -> (1, None)
+      ``02. Brent Black``      -> (2, None)
+      ``Sugaree``              -> (None, None)
+    """
+    if not stem:
+        return None, None
+    m = _DISC_TRACK_RE.search(stem)
+    if m:
+        try:
+            return int(m.group(2)), int(m.group(1))
+        except ValueError:
+            pass
+    m = _LEADING_TRACK_RE.match(stem)
+    if m:
+        try:
+            return int(m.group(1)), None
+        except ValueError:
+            pass
+    return None, None
 
 
 def apply_plans(plans: list[TagPlan], mode: Mode) -> list[TagResult]:

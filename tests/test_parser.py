@@ -738,6 +738,13 @@ class TestTrustParentArtist:
         "/Tapes/[Unknown Album]/01 - Track01.flac",
         # Library-root word stops the walk.
         "/Tapes/2001-11-04 Hill Auditorium - Ann Arbor MI",
+        # Loose file directly inside the library root (folder = library
+        # itself): ancestor walk would otherwise climb past `Music` (a
+        # format-container word) and grab the next clean-looking name
+        # (`PlexData`, `Volumes`, server hostname, …) as the artist. Bail
+        # before the walk starts.
+        "/mnt/user/PlexData/Music/Tapes",
+        "/Volumes/PlexData/Music/Bootlegs",
     ])
     def test_returns_none_when_no_clean_ancestor(self, path: str):
         assert _trust_parent_artist(Path(path)) is None

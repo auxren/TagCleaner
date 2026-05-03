@@ -206,17 +206,23 @@ class TestTrackTolerance:
         code = main([str(tmp_path), "--yes", "--no-banner", "--track-tolerance", "0"])
         assert code == 0
         # Strict mode still applies concert-level metadata via the metadata-only
-        # fallback; per-track TITLE/TRACKNUMBER stay unwritten.
+        # fallback. TRACKNUMBER now lands too (parsed from the filename's
+        # leading "01"; positional fallback otherwise) — Plex needs every
+        # track to have a number, so we never leave it blank.
         f = FLAC(str(tmp_path / "Rush 1984-09-21" / "01 a.flac"))
         assert f["ARTIST"] == ["Rush"]
         assert "TITLE" not in f
-        assert "TRACKNUMBER" not in f
+        assert f["TRACKNUMBER"] == ["01"]
+        f2 = FLAC(str(tmp_path / "Rush 1984-09-21" / "02 b.flac"))
+        assert f2["TRACKNUMBER"] == ["02"]
 
     def test_large_mismatch_falls_back_to_metadata_only(
         self, tmp_path: Path, make_concert_tree,
     ):
         # 5 tracks in info.txt, 1 audio file — wildly past auto tolerance.
-        # Concert-level metadata still gets stamped, per-track tags do not.
+        # Concert-level metadata still gets stamped; titles stay unset (we
+        # don't trust the parsed setlist), but TRACKNUMBER lands positionally
+        # so Plex isn't left with a blank track number.
         make_concert_tree(
             "Phish 1997-11-17 MSG",
             audio=["show.flac"],
@@ -234,7 +240,7 @@ class TestTrackTolerance:
         assert f["ARTIST"] == ["Phish"]
         assert f["DATE"] == ["1997-11-17"]
         assert "TITLE" not in f
-        assert "TRACKNUMBER" not in f
+        assert f["TRACKNUMBER"] == ["01"]
 
 
 class TestPromptUnknown:

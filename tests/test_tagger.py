@@ -71,7 +71,11 @@ class TestBuildPlans:
         c = _concert(folder, audio, tracks)
         plans = build_plans(c, metadata_only=True)
         assert len(plans) == 3
-        assert all(p.track is None and p.title is None for p in plans)
+        # Metadata-only mode skips per-track titles (we don't trust the
+        # parsed setlist) but still assigns track numbers — parsed from
+        # the filename when possible, positional fallback otherwise.
+        assert all(p.title is None for p in plans)
+        assert [p.track for p in plans] == [1, 2, 3]
         assert all(p.artist == "Test Artist" for p in plans)
 
     def test_metadata_only_works_with_no_tracks(self, tmp_path: Path, make_flac):
@@ -81,7 +85,9 @@ class TestBuildPlans:
         plans = build_plans(c, metadata_only=True)
         assert len(plans) == 1
         assert plans[0].title is None
-        assert plans[0].track is None
+        # Track number lands even when no setlist parsed — required so
+        # Plex never sees a missing TRACKNUMBER.
+        assert plans[0].track == 1
 
 
 class TestApplyPlansDryRun:
@@ -153,6 +159,40 @@ class TestApplyPlansMetadataOnly:
         # Per-track fields untouched.
         assert f["TITLE"] == ["Existing Title"]
         assert f["TRACKNUMBER"] == ["07"]
+
+    def test_fills_missing_tracknumber_from_filename(self, tmp_path: Path, make_flac):
+        # Real-world Phil & Friends case: SongKong stamped concert metadata
+        # but no TRACKNUMBER. Files use the etree-style ``d1t01`` suffix,
+        # which we should parse so Plex sees a real number per track.
+        # (DISCNUMBER write also needs disc_total which we don't have in
+        # metadata-only mode, so we don't assert disc here.)
+        folder = tmp_path / "phil1959-04-05"
+        files = [
+            make_flac(folder / "phil1959-04-05d1t01.flac"),
+            make_flac(folder / "phil1959-04-05d1t02.flac"),
+            make_flac(folder / "phil1959-04-05d2t05.flac"),
+        ]
+        c = _concert(folder, files, tracks=[])
+        plans = build_plans(c, metadata_only=True)
+        apply_plans(plans, Mode.IN_PLACE)
+
+        out = [FLAC(str(p)) for p in files]
+        assert out[0]["TRACKNUMBER"] == ["01"]
+        assert out[1]["TRACKNUMBER"] == ["02"]
+        assert out[2]["TRACKNUMBER"] == ["05"]
+
+    def test_positional_fallback_when_filename_has_no_number(self, tmp_path: Path, make_flac):
+        folder = tmp_path / "show"
+        files = [
+            make_flac(folder / "First Song.flac"),
+            make_flac(folder / "Second Song.flac"),
+            make_flac(folder / "Third Song.flac"),
+        ]
+        c = _concert(folder, files, tracks=[])
+        plans = build_plans(c, metadata_only=True)
+        apply_plans(plans, Mode.IN_PLACE)
+        out = [FLAC(str(p)) for p in files]
+        assert [t["TRACKNUMBER"][0] for t in out] == ["01", "02", "03"]
 
 
 class TestApplyPlansCopyTo:

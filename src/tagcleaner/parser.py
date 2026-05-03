@@ -29,6 +29,19 @@ _NOT_AN_ARTIST = frozenset({
     "library", "collection",
 })
 
+# Tighter subset for detecting the *library root* itself. Used when a file's
+# own parent is one of these — at that point there's no artist directory
+# between the file and the library, so walking further up only finds
+# filesystem-level paths (``PlexData``, ``Volumes``, ``mnt``). Format
+# containers like ``audio``/``flac`` are NOT included because they can appear
+# *inside* an artist's tree (``Show/Audio/CD1/track.flac``) where we still
+# want to walk up to find the artist.
+_LIBRARY_ROOTS = frozenset({
+    "tapes", "bootlegs", "concerts", "live", "shows", "downloads",
+    "music", "archive", "archives", "library", "collection",
+    "new", "unsorted", "misc",
+})
+
 # Dates can sit flush against an artist abbreviation ('los1996-03-20') or
 # inside an underscore-joined filename ('SRV_1985.0725'), so we don't require
 # a word boundary before the year.
@@ -1461,6 +1474,13 @@ def _trust_parent_artist(folder: Path) -> str | None:
     splits (so ``"Eric Clapton and Dr. John - 1996-01-13 - London"`` yields
     ``"Eric Clapton and Dr. John"``).
     """
+    # If the file's *own* parent is a library-root wrapper (``Tapes``, ``Music``,
+    # ``Bootlegs``…) there's no artist directory between the file and the
+    # library root — anything we'd find by walking further up belongs to the
+    # filesystem hierarchy (``PlexData``, ``Volumes``, ``mnt``…), not to the
+    # music. Bail before we mis-tag loose files at the library root.
+    if folder.name and folder.name.lower() in _LIBRARY_ROOTS:
+        return None
     current = folder.parent
     for _ in range(_ANCESTOR_DEPTH):
         if current is None or current == current.parent:
