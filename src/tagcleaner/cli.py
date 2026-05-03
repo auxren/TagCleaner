@@ -661,7 +661,7 @@ def _lexicon_import(args: argparse.Namespace) -> int:
         f"{len(counter)} unique artists, {skipped} skipped."
     )
 
-    lex = Lexicon.load(args.lexicon)
+    lex = Lexicon.load_or_seed(args.lexicon)
     before = set(lex.artists)
     new = sum(1 for a in counter if a not in before)
     console.print(

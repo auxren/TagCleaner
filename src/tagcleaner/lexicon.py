@@ -118,6 +118,35 @@ class Lexicon:
         return cls(artists=artists, venues=venues)
 
     @classmethod
+    def load_or_seed(cls, path: Path) -> "Lexicon":
+        """Load lexicon from *path*, or seed *path* with the bundled
+        starter-lexicon if the file is missing/empty. First-run UX: a
+        brand-new library gets a curated artist + venue list out of the
+        box instead of starting empty.
+
+        The starter is bundled at ``src/tagcleaner/data/starter-lexicon.json``
+        and represents ~8500 artists + ~2900 venues from a real live-music
+        library, junk-pruned and MusicBrainz-validated, with all counts
+        normalised to 1 (so first-run users do not inherit someone else's
+        library distribution as their canonicalisation prior).
+        """
+        lex = cls.load(path)
+        if lex.artists or lex.venues:
+            return lex
+        starter = Path(__file__).parent / "data" / LEXICON_FILENAME.replace(
+            "tagcleaner-lexicon.json", "starter-lexicon.json"
+        )
+        if not starter.exists():
+            return lex
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            import shutil
+            shutil.copy(str(starter), str(path))
+        except OSError:
+            return lex
+        return cls.load(path)
+
+    @classmethod
     def from_concert_dicts(cls, concerts: Iterable[dict]) -> "Lexicon":
         """Build a lexicon from drafts/history-shaped concert dicts.
 
