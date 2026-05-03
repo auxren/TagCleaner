@@ -741,10 +741,10 @@ class TestTrustParentArtist:
         # Loose file directly inside the library root (folder = library
         # itself): ancestor walk would otherwise climb past `Music` (a
         # format-container word) and grab the next clean-looking name
-        # (`PlexData`, `Volumes`, server hostname, …) as the artist. Bail
+        # (library/share name, mount point, server hostname, …) as the artist. Bail
         # before the walk starts.
-        "/mnt/user/PlexData/Music/Tapes",
-        "/Volumes/PlexData/Music/Bootlegs",
+        "/mnt/library/Music/Tapes",
+        "/Volumes/library/Music/Bootlegs",
     ])
     def test_returns_none_when_no_clean_ancestor(self, path: str):
         assert _trust_parent_artist(Path(path)) is None
