@@ -87,10 +87,19 @@ class Lexicon:
         return _add(name, count, self.venues, self._venue_index)
 
     def save(self, path: Path) -> None:
+        # Merge with existing file on disk so externally-imported entries
+        # (e.g. from Qobuz, MusicBrainz validation) survive the round-trip.
+        existing = Lexicon.load(path)
+        merged_artists = dict(existing.artists)
+        for name, count in self.artists.items():
+            merged_artists[name] = max(merged_artists.get(name, 0), count)
+        merged_venues = dict(existing.venues)
+        for name, count in self.venues.items():
+            merged_venues[name] = max(merged_venues.get(name, 0), count)
         payload = {
             "schema": SCHEMA_VERSION,
-            "artists": _sort_by_count(self.artists),
-            "venues": _sort_by_count(self.venues),
+            "artists": _sort_by_count(merged_artists),
+            "venues": _sort_by_count(merged_venues),
         }
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_bytes(json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8", "replace"))
