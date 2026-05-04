@@ -175,6 +175,45 @@ tagcleaner lexicon import /mnt/music/qobuz --lexicon /mnt/music/concerts/tagclea
 your studio collection before letting it loose on a larger bootleg library —
 fewer prompts, fewer wrong-guess no-ops.
 
+## Find audio-content duplicates
+
+Filename-based dedupe (subset by name + size) misses re-encodes, renames,
+and lossless/lossy pairs of the same recording. `tagcleaner dedupe` uses
+[Chromaprint](https://acoustid.org/chromaprint) fingerprints — the
+audio-content hashes — so it catches duplicates regardless of how they
+were repackaged.
+
+```bash
+# Install the optional dependency (Python wrapper + binary):
+pip install tagcleaner[dedupe]
+# plus the fpcalc binary itself:
+#   apt:  libchromaprint-tools
+#   brew: chromaprint
+#   else: https://acoustid.org/chromaprint (static binary works alone)
+
+# Dry-run: report cluster of duplicate folders, no changes.
+tagcleaner dedupe /mnt/music/concerts
+
+# Compare across multiple roots — useful for triaging a dupes-quarantine
+# folder against the main library:
+tagcleaner dedupe /mnt/music/concerts /mnt/music/dupes-pending
+
+# Apply: keep the largest folder of each cluster (by total bytes), delete
+# the rest. Other --keep strategies: most-tracks, oldest, newest.
+tagcleaner dedupe /mnt/music/concerts --apply --keep largest
+```
+
+Two folders are flagged as duplicates when ≥80% of their tracks pair up
+by sorted-name index with both matching duration (±7 s) and Chromaprint
+similarity ≥0.85. Tune via `--threshold`, `--folder-threshold`, and
+`--duration-tolerance`.
+
+Fingerprints are cached in `<root>/tagcleaner-fingerprints.json` so
+re-runs are near-instant. `libchromaprint` is preferred but optional:
+when only the `fpcalc` binary is available, the comparison falls back to
+Hamming distance over the raw fingerprint bytes — coarser, but still
+correctly identifies exact duplicates.
+
 ## Enrich with setlist.fm (optional)
 
 If a folder is missing venue/city/setlist information, TagCleaner can query

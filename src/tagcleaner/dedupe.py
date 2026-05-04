@@ -276,6 +276,38 @@ def folders_match(
     return fraction >= folder_threshold, fraction
 
 
+def are_audio_duplicates(
+    folder_a: Path,
+    folder_b: Path,
+    *,
+    cache: FingerprintCache | None = None,
+    fp_threshold: float = DEFAULT_FP_THRESHOLD,
+    duration_tolerance: float = DEFAULT_DURATION_TOL,
+    folder_threshold: float = DEFAULT_FOLDER_THRESHOLD,
+) -> tuple[bool, float]:
+    """High-level helper: fingerprint two folders and report whether their
+    audio content matches.
+
+    Returns ``(is_duplicate, fraction_matched)``. The fraction is over the
+    *longer* folder so a short subset can't claim the larger one. Returns
+    ``(False, 0.0)`` when either side has no fingerprintable audio.
+
+    The single-folder ``cache`` makes successive same-folder calls cheap;
+    pass ``None`` to skip caching entirely (useful for one-off checks).
+    """
+    cache = cache or FingerprintCache()
+    fp_a = fingerprint_folder(folder_a, cache)
+    fp_b = fingerprint_folder(folder_b, cache)
+    if not fp_a.tracks or not fp_b.tracks:
+        return False, 0.0
+    return folders_match(
+        fp_a, fp_b,
+        fp_threshold=fp_threshold,
+        duration_tolerance=duration_tolerance,
+        folder_threshold=folder_threshold,
+    )
+
+
 def cluster_duplicates(
     fingerprints: Sequence[FolderFingerprint],
     **match_kwargs,

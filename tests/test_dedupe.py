@@ -18,6 +18,7 @@ from tagcleaner.dedupe import (
     FingerprintCache,
     FolderFingerprint,
     _bit_similarity,
+    are_audio_duplicates,
     cluster_duplicates,
     folders_match,
     pick_keeper,
@@ -157,6 +158,44 @@ class TestPickKeeper:
         a = FolderFingerprint(folder=tmp_path, tracks=[])
         with pytest.raises(ValueError):
             pick_keeper([a], strategy="bogus")
+
+
+class TestAreAudioDuplicates:
+    """High-level helper used by server-side collision handlers."""
+
+    def test_returns_false_for_folders_with_no_audio(self, tmp_path):
+        # Both folders empty — no fingerprints, no possibility of match.
+        a = tmp_path / "a"; a.mkdir()
+        b = tmp_path / "b"; b.mkdir()
+        is_dupe, frac = are_audio_duplicates(a, b)
+        assert is_dupe is False
+        assert frac == 0.0
+
+    def test_calls_through_to_fingerprint_folder_and_match(self, tmp_path):
+        # Stub fingerprint_folder + compare_fingerprints to validate plumbing
+        # without running fpcalc.
+        a = tmp_path / "a"; a.mkdir()
+        b = tmp_path / "b"; b.mkdir()
+        fp_a = FolderFingerprint(folder=a, tracks=[(a / "01.flac", 180.0, "X")])
+        fp_b = FolderFingerprint(folder=b, tracks=[(b / "01.flac", 180.0, "X")])
+        with patch("tagcleaner.dedupe.fingerprint_folder",
+                   side_effect=[fp_a, fp_b]), \
+             patch("tagcleaner.dedupe.compare_fingerprints", return_value=1.0):
+            is_dupe, frac = are_audio_duplicates(a, b)
+        assert is_dupe is True
+        assert frac == pytest.approx(1.0)
+
+    def test_passes_thresholds_through(self, tmp_path):
+        a = tmp_path / "a"; a.mkdir()
+        b = tmp_path / "b"; b.mkdir()
+        fp_a = FolderFingerprint(folder=a, tracks=[(a / "01.flac", 180.0, "X")])
+        fp_b = FolderFingerprint(folder=b, tracks=[(b / "01.flac", 180.0, "X")])
+        # Pass a fp_threshold of 1.0001 — impossible — and ensure it returns False.
+        with patch("tagcleaner.dedupe.fingerprint_folder",
+                   side_effect=[fp_a, fp_b]), \
+             patch("tagcleaner.dedupe.compare_fingerprints", return_value=1.0):
+            is_dupe, _ = are_audio_duplicates(a, b, fp_threshold=1.0001)
+        assert is_dupe is False
 
 
 class TestFingerprintCache:
