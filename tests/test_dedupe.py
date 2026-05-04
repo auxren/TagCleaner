@@ -20,6 +20,7 @@ from tagcleaner.dedupe import (
     _bit_similarity,
     are_audio_duplicates,
     cluster_duplicates,
+    folder_audio_signature,
     folders_match,
     pick_keeper,
 )
@@ -240,6 +241,53 @@ class TestAreAudioDuplicates:
              patch("tagcleaner.dedupe.compare_fingerprints", return_value=1.0):
             is_dupe, _ = are_audio_duplicates(a, b, fp_threshold=1.0001)
         assert is_dupe is False
+
+
+class TestFolderAudioSignature:
+    """Audio signature is a stable hash over a folder's track fingerprints —
+    used by history to skip re-tagging when the audio is unchanged."""
+
+    def test_empty_folder_returns_none(self, tmp_path):
+        empty = tmp_path / "empty"; empty.mkdir()
+        with patch("tagcleaner.dedupe.fingerprint_folder",
+                   return_value=FolderFingerprint(folder=empty, tracks=[])):
+            assert folder_audio_signature(empty) is None
+
+    def test_same_tracks_same_signature(self, tmp_path):
+        a = tmp_path / "a"; a.mkdir()
+        tracks = [(a / "01.flac", 180.0, "FP1"), (a / "02.flac", 200.0, "FP2")]
+        with patch("tagcleaner.dedupe.fingerprint_folder",
+                   return_value=FolderFingerprint(folder=a, tracks=tracks)):
+            sig1 = folder_audio_signature(a)
+            sig2 = folder_audio_signature(a)
+        assert sig1 == sig2
+        assert len(sig1) == 40  # sha1 hex length
+
+    def test_different_fingerprints_different_signature(self, tmp_path):
+        a = tmp_path / "a"; a.mkdir()
+        tracks_a = [(a / "01.flac", 180.0, "FP1")]
+        tracks_b = [(a / "01.flac", 180.0, "FP2-DIFFERENT")]
+        with patch("tagcleaner.dedupe.fingerprint_folder",
+                   return_value=FolderFingerprint(folder=a, tracks=tracks_a)):
+            sig_a = folder_audio_signature(a)
+        with patch("tagcleaner.dedupe.fingerprint_folder",
+                   return_value=FolderFingerprint(folder=a, tracks=tracks_b)):
+            sig_b = folder_audio_signature(a)
+        assert sig_a != sig_b
+
+    def test_signature_is_track_order_independent(self, tmp_path):
+        # Tracks listed in different orders should hash to the same signature
+        # (the hash sorts by basename internally).
+        a = tmp_path / "a"; a.mkdir()
+        ordered = [(a / "01.flac", 180.0, "FPA"), (a / "02.flac", 200.0, "FPB")]
+        reversed_ = list(reversed(ordered))
+        with patch("tagcleaner.dedupe.fingerprint_folder",
+                   return_value=FolderFingerprint(folder=a, tracks=ordered)):
+            sig1 = folder_audio_signature(a)
+        with patch("tagcleaner.dedupe.fingerprint_folder",
+                   return_value=FolderFingerprint(folder=a, tracks=reversed_)):
+            sig2 = folder_audio_signature(a)
+        assert sig1 == sig2
 
 
 class TestFingerprintCache:

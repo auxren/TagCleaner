@@ -309,6 +309,35 @@ def folders_match(
     return fraction >= folder_threshold, fraction
 
 
+def folder_audio_signature(
+    folder: Path,
+    cache: FingerprintCache | None = None,
+) -> str | None:
+    """Stable hash over a folder's Chromaprint fingerprints.
+
+    Returns ``None`` when the folder has no fingerprintable audio, or
+    when ``fpcalc`` isn't available. The hash is deterministic over
+    track fingerprints sorted by file basename, so re-encodes that
+    preserve audio content (FLAC compression-level changes, format
+    conversions) produce the same signature.
+
+    Designed to be cheap on warm caches: when *cache* already has all
+    track fingerprints, this is just a sha1 over them.
+    """
+    cache = cache or FingerprintCache()
+    fp = fingerprint_folder(folder, cache)
+    if not fp.tracks:
+        return None
+    import hashlib
+    h = hashlib.sha1()
+    for path, _dur, fpstr in sorted(fp.tracks, key=lambda t: t[0].name):
+        h.update(path.name.encode("utf-8", "replace"))
+        h.update(b"|")
+        h.update(fpstr.encode("ascii", "replace"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
 def are_audio_duplicates(
     folder_a: Path,
     folder_b: Path,

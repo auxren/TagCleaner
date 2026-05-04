@@ -59,6 +59,7 @@ class HistoryEntry:
     concert: dict[str, Any]         # drafts-shaped dict (see drafts.concert_to_dict)
     tagging: Optional[TaggingOutcome] = None
     folder_mtime: Optional[float] = None  # st_mtime at last scan; enables pre-enumeration skip
+    audio_signature: Optional[str] = None  # Chromaprint-content hash; skip second-chance
 
 
 @dataclass
@@ -74,6 +75,7 @@ class History:
         concert: Concert,
         fingerprint: str,
         folder_mtime: Optional[float] = None,
+        audio_signature: Optional[str] = None,
     ) -> None:
         key = _key(concert.folder)
         prior = self.entries.get(key)
@@ -84,6 +86,9 @@ class History:
             concert=concert_to_dict(concert),
             tagging=prior.tagging if prior else None,
             folder_mtime=folder_mtime,
+            audio_signature=audio_signature
+                if audio_signature is not None
+                else (prior.audio_signature if prior else None),
         )
 
     def record_tagging(self, folder: Path, outcome: TaggingOutcome) -> None:
@@ -98,11 +103,29 @@ def should_skip(
     current_fingerprint: str,
     mode: Mode,
     copy_to: Optional[Path],
+    *,
+    current_audio_signature: Optional[str] = None,
 ) -> bool:
+    """Return True when the folder can be skipped on this run.
+
+    Two acceptance paths, OR-combined:
+      * the cheap name+size ``fingerprint`` matches what we recorded last
+        time (existing behaviour), or
+      * a Chromaprint-derived ``audio_signature`` is provided AND matches
+        the recorded one — this catches re-encodes that change file size
+        but preserve audio content (FLAC compression-level changes,
+        format-converted copies, etc.).
+
+    The audio path is opt-in: callers that don't pass ``current_audio_signature``
+    behave exactly as before.
+    """
     if entry is None or entry.tagging is None:
         return False
     if entry.fingerprint != current_fingerprint:
-        return False
+        if (current_audio_signature is None
+                or entry.audio_signature is None
+                or entry.audio_signature != current_audio_signature):
+            return False
     return _mode_matches(entry.tagging, mode, copy_to)
 
 
@@ -162,6 +185,7 @@ def load_history(path: Path) -> History:
                 concert=rec["concert"],
                 tagging=tagging,
                 folder_mtime=rec.get("folder_mtime"),
+                audio_signature=rec.get("audio_signature"),
             )
         except (KeyError, TypeError):
             continue
@@ -195,6 +219,8 @@ def _entry_to_dict(entry: HistoryEntry) -> dict[str, Any]:
         d["tagging"] = asdict(entry.tagging)
     if entry.folder_mtime is not None:
         d["folder_mtime"] = entry.folder_mtime
+    if entry.audio_signature is not None:
+        d["audio_signature"] = entry.audio_signature
     return d
 
 

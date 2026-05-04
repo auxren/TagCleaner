@@ -175,6 +175,27 @@ tagcleaner lexicon import /mnt/music/qobuz --lexicon /mnt/music/concerts/tagclea
 your studio collection before letting it loose on a larger bootleg library —
 fewer prompts, fewer wrong-guess no-ops.
 
+## Skip unchanged audio (`--audio-fingerprint`)
+
+Default skip uses a name+size content hash, which catches most "no
+change" cases — but it misses re-encodes that change file size while
+preserving audio content (FLAC compression-level swap, format
+conversion). Pass `--audio-fingerprint` to add a Chromaprint-based
+signature as a second-chance skip:
+
+```bash
+tagcleaner /mnt/music/concerts --audio-fingerprint
+```
+
+When set, history records a stable hash over each folder's track
+fingerprints. On subsequent runs — including under `--rescan-all` —
+folders whose audio signature matches the recorded one are skipped
+even if their filenames and sizes have drifted.
+
+The fingerprint cache (`<root>/tagcleaner-fingerprints.json`) is shared
+with `tagcleaner dedupe`, so warming it once benefits both. Requires the
+`fpcalc` binary on PATH; opt-in only, default behaviour is unchanged.
+
 ## Find audio-content duplicates
 
 Filename-based dedupe (subset by name + size) misses re-encodes, renames,

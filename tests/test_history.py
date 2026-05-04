@@ -24,6 +24,7 @@ def _entry(
     fp: str = "fp-abc",
     mtime: float | None = 1234567.0,
     outcome: TaggingOutcome | None = None,
+    audio_signature: str | None = None,
 ) -> HistoryEntry:
     return HistoryEntry(
         folder="/some/folder",
@@ -32,6 +33,7 @@ def _entry(
         concert={"folder": "/some/folder"},
         tagging=outcome,
         folder_mtime=mtime,
+        audio_signature=audio_signature,
     )
 
 
@@ -78,6 +80,55 @@ class TestShouldSkip:
         ))
         assert should_skip(entry, "fp-abc", Mode.COPY_TO, dst_new) is False
         assert should_skip(entry, "fp-abc", Mode.COPY_TO, dst_old) is True
+
+
+class TestShouldSkipAudioSignature:
+    """Audio-content fingerprint provides a second-chance skip path: when
+    file size changes (re-encode, format swap) but audio is identical,
+    history can still skip."""
+
+    def test_audio_signature_match_skips_despite_fingerprint_drift(self):
+        entry = _entry(
+            fp="old-fp",
+            audio_signature="audio-sha-XYZ",
+            outcome=TaggingOutcome(mode=Mode.IN_PLACE.value, applied_at="t", applied=2),
+        )
+        assert should_skip(
+            entry, "new-fp", Mode.IN_PLACE, None,
+            current_audio_signature="audio-sha-XYZ",
+        ) is True
+
+    def test_audio_signature_mismatch_does_not_skip(self):
+        entry = _entry(
+            fp="old-fp",
+            audio_signature="audio-sha-XYZ",
+            outcome=TaggingOutcome(mode=Mode.IN_PLACE.value, applied_at="t", applied=2),
+        )
+        assert should_skip(
+            entry, "new-fp", Mode.IN_PLACE, None,
+            current_audio_signature="audio-sha-DIFFERENT",
+        ) is False
+
+    def test_no_current_audio_signature_falls_back_to_fingerprint_check(self):
+        entry = _entry(
+            fp="old-fp",
+            audio_signature="audio-sha-XYZ",
+            outcome=TaggingOutcome(mode=Mode.IN_PLACE.value, applied_at="t", applied=2),
+        )
+        # Without a current signature, should_skip behaves exactly like before:
+        # name+size fingerprint mismatch → don't skip.
+        assert should_skip(entry, "new-fp", Mode.IN_PLACE, None) is False
+
+    def test_no_stored_audio_signature_falls_back_to_fingerprint_check(self):
+        entry = _entry(
+            fp="old-fp",
+            audio_signature=None,
+            outcome=TaggingOutcome(mode=Mode.IN_PLACE.value, applied_at="t", applied=2),
+        )
+        assert should_skip(
+            entry, "new-fp", Mode.IN_PLACE, None,
+            current_audio_signature="audio-sha-XYZ",
+        ) is False
 
 
 class TestCanSkipByMtime:
@@ -139,6 +190,23 @@ class TestPersistence:
         assert entry.tagging is not None
         assert entry.tagging.applied == 1
         assert entry.concert["artist"] == "Grateful Dead"
+
+    def test_audio_signature_round_trips(self, tmp_path: Path):
+        history = History()
+        folder = tmp_path / "show"
+        folder.mkdir()
+        concert = self._make_concert(folder)
+        history.record_scan(concert, "fp-xyz", 9876.0, audio_signature="sha-AUDIO-1")
+        history.record_tagging(folder, TaggingOutcome(
+            mode=Mode.IN_PLACE.value, applied_at="2026-01-01T00:00:00Z", applied=1,
+        ))
+        save_path = tmp_path / "tagcleaner-history.json"
+        save_history(history, save_path)
+
+        reloaded = load_history(save_path)
+        entry = reloaded.get(folder)
+        assert entry is not None
+        assert entry.audio_signature == "sha-AUDIO-1"
 
     def test_missing_file_returns_empty_history(self, tmp_path: Path):
         history = load_history(tmp_path / "no-such-file.json")
