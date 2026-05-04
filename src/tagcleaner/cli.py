@@ -593,15 +593,31 @@ def _resolve_lexicon_path(args: argparse.Namespace) -> Path | None:
 
 
 def _build_lexicon(history: History, path: Path | None) -> Lexicon | None:
-    """Rebuild the lexicon from history entries, persist it if possible."""
+    """Build the in-memory lexicon: union of (a) what's already on disk,
+    seeded with the bundled starter on first run, and (b) what we can
+    derive from history entries.
+
+    Loading from disk preserves entries that were added externally — by
+    daemon-side scripts, MusicBrainz validators, manual edits — so the
+    parser's canonicalization and the substring-precedence guard see the
+    *full* set of known artists, not just the subset TagCleaner itself
+    has tagged. We then merge in counts derived from history (max-wins
+    semantics inside Lexicon.save) and persist.
+    """
     if path is None:
         return None
-    lex = Lexicon.from_history(history)
+    on_disk = Lexicon.load_or_seed(path)
+    from_hist = Lexicon.from_history(history)
+    # Merge: every entry from disk stays; history bumps counts where it can.
+    for name, count in from_hist.artists.items():
+        on_disk.add_artist(name, count=count, force=True)
+    for name, count in from_hist.venues.items():
+        on_disk.add_venue(name, count=count)
     try:
-        lex.save(path)
+        on_disk.save(path)
     except OSError as exc:
         console.print(f"[yellow]⚠️  could not save lexicon: {exc}[/]")
-    return lex
+    return on_disk
 
 
 # Trailing "(24bit-192kHz)" / "[24B-44.1kHz]" fidelity tags on Qobuz/HDTracks
