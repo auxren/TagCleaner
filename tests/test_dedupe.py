@@ -160,6 +160,50 @@ class TestPickKeeper:
             pick_keeper([a], strategy="bogus")
 
 
+class TestFingerprintFile:
+    """fingerprint_file should prefer pyacoustid when available, fall back
+    to a direct fpcalc subprocess otherwise."""
+
+    def test_uses_pyacoustid_when_available(self, tmp_path):
+        from tagcleaner import dedupe
+        fake_path = tmp_path / "x.flac"
+        fake_path.touch()
+
+        class _FakeAcoustid:
+            FingerprintGenerationError = Exception
+            @staticmethod
+            def fingerprint_file(p, maxlength):
+                return 180.0, b"FPSTR"
+
+        with patch("tagcleaner.dedupe._try_import_acoustid",
+                   return_value=_FakeAcoustid):
+            result = dedupe.fingerprint_file(fake_path)
+        assert result == (180.0, "FPSTR")
+
+    def test_falls_back_to_fpcalc_subprocess(self, tmp_path):
+        from tagcleaner import dedupe
+        fake_path = tmp_path / "x.flac"
+        fake_path.touch()
+        import subprocess
+        fake_result = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout='{"duration": 250.5, "fingerprint": "ABC123"}',
+            stderr="",
+        )
+        with patch("tagcleaner.dedupe._try_import_acoustid", return_value=None), \
+             patch("subprocess.run", return_value=fake_result):
+            result = dedupe.fingerprint_file(fake_path)
+        assert result == (250.5, "ABC123")
+
+    def test_returns_none_when_neither_works(self, tmp_path):
+        from tagcleaner import dedupe
+        with patch("tagcleaner.dedupe._try_import_acoustid", return_value=None), \
+             patch("subprocess.run", side_effect=FileNotFoundError):
+            result = dedupe.fingerprint_file(tmp_path / "x.flac")
+        assert result is None
+
+
 class TestAreAudioDuplicates:
     """High-level helper used by server-side collision handlers."""
 

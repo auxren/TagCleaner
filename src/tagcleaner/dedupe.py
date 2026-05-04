@@ -24,9 +24,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
-from .scanner import AUDIO_EXTS
-
 log = logging.getLogger(__name__)
+
+# Mirror of scanner.AUDIO_EXTS; duplicated here so this module imports without
+# pulling in the full parser graph (dateutil etc.) when it's used as a
+# standalone fingerprinting helper from server-side scripts.
+AUDIO_EXTS = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".aif", ".aiff"}
 
 DEFAULT_FP_THRESHOLD = 0.85
 DEFAULT_DURATION_TOL = 7.0
@@ -63,16 +66,46 @@ def fpcalc_available() -> bool:
 
 
 def fingerprint_file(path: Path, length: int = 120) -> tuple[float, str] | None:
-    """Run fpcalc on *path*. Returns ``(duration, fingerprint)`` or None."""
+    """Run fpcalc on *path*. Returns ``(duration, fingerprint)`` or None.
+
+    Prefers the ``pyacoustid`` Python wrapper when available — it gives
+    nicer error types. Falls back to invoking the ``fpcalc`` binary
+    directly via subprocess when pyacoustid isn't installable (e.g. on
+    constrained Slackware/Unraid setups). Either path needs the
+    ``fpcalc`` binary on PATH.
+    """
     acoustid = _try_import_acoustid()
-    if acoustid is None:
+    if acoustid is not None:
+        try:
+            dur, fp = acoustid.fingerprint_file(str(path), maxlength=length)
+        except acoustid.FingerprintGenerationError as exc:
+            log.debug("fingerprint failed for %s: %s", path, exc)
+            return None
+        return float(dur), fp.decode("ascii") if isinstance(fp, bytes) else str(fp)
+    return _fingerprint_via_fpcalc(path, length)
+
+
+def _fingerprint_via_fpcalc(path: Path, length: int) -> tuple[float, str] | None:
+    import json
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["fpcalc", "-json", "-length", str(length), str(path)],
+            capture_output=True, timeout=60, check=True, text=True,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, subprocess.TimeoutExpired) as exc:
+        log.debug("fpcalc failed for %s: %s", path, exc)
         return None
     try:
-        dur, fp = acoustid.fingerprint_file(str(path), maxlength=length)
-    except acoustid.FingerprintGenerationError as exc:
-        log.debug("fingerprint failed for %s: %s", path, exc)
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        log.debug("fpcalc returned non-JSON for %s: %s", path, exc)
         return None
-    return float(dur), fp.decode("ascii") if isinstance(fp, bytes) else str(fp)
+    dur = data.get("duration")
+    fp = data.get("fingerprint")
+    if dur is None or fp is None:
+        return None
+    return float(dur), str(fp)
 
 
 def compare_fingerprints(a_fp: str, b_fp: str) -> float:

@@ -184,12 +184,13 @@ audio-content hashes — so it catches duplicates regardless of how they
 were repackaged.
 
 ```bash
-# Install the optional dependency (Python wrapper + binary):
-pip install tagcleaner[dedupe]
-# plus the fpcalc binary itself:
+# Only the `fpcalc` binary is required:
 #   apt:  libchromaprint-tools
 #   brew: chromaprint
 #   else: https://acoustid.org/chromaprint (static binary works alone)
+# Optionally also: `pip install tagcleaner[dedupe]` for the pyacoustid wrapper —
+# nicer error types, but not required (TagCleaner shells to fpcalc directly when
+# pyacoustid isn't available).
 
 # Dry-run: report cluster of duplicate folders, no changes.
 tagcleaner dedupe /mnt/music/concerts

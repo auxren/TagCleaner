@@ -741,13 +741,6 @@ def _dedupe_command(argv: list[str]) -> int:
         _try_import_chromaprint,
     )
 
-    acoustid = _try_import_acoustid()
-    if acoustid is None:
-        console.print(
-            "[bold red]❌ pyacoustid not installed.[/] "
-            "Install with: [cyan]pip install tagcleaner[dedupe][/]"
-        )
-        return 2
     if not fpcalc_available():
         console.print(
             "[bold red]❌ fpcalc binary not found on PATH.[/]\n"
@@ -756,6 +749,10 @@ def _dedupe_command(argv: list[str]) -> int:
             "  Static binary: https://acoustid.org/chromaprint"
         )
         return 2
+    if _try_import_acoustid() is None:
+        console.print(
+            "[bright_black]ℹ️  pyacoustid not installed; shelling to fpcalc directly.[/]"
+        )
     if _try_import_chromaprint() is None:
         console.print(
             "[bright_black]ℹ️  libchromaprint not loadable; using byte-Hamming "
