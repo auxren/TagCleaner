@@ -103,6 +103,43 @@ class TestMatchArtist:
         assert lex.match_artist("moe") == "moe."  # normalizes the same
         assert lex.match_artist("doe") is None
 
+    def test_substring_match_pulls_canonical_out_of_noisy_string(self):
+        # "John Hiatt Cotati Cabaret Cotati CA SDB" should resolve to the
+        # known canonical, not be treated as a brand-new artist.
+        lex = Lexicon(artists={"John Hiatt": 30})
+        assert lex.match_artist("John Hiatt Cotati Cabaret Cotati CA SDB") == "John Hiatt"
+
+    def test_substring_match_picks_longest_canonical(self):
+        # Both "Phil Lesh" and "Phil Lesh & Friends" are in the lex.
+        # A noisy string containing the longer one should resolve to that.
+        lex = Lexicon(artists={"Phil Lesh": 5, "Phil Lesh & Friends": 8})
+        assert lex.match_artist("Phil Lesh & Friends 2018-06-04 SBD") == "Phil Lesh & Friends"
+
+    def test_substring_match_respects_word_boundaries(self):
+        # "ozz" should not pull in "Ozzy Osbourne" via raw substring.
+        lex = Lexicon(artists={"Ozzy Osbourne": 10})
+        assert lex.match_artist("ozz tribute") is None
+
+    def test_substring_match_skips_short_canonicals(self):
+        # "U2" is too short to safely act as a substring trigger.
+        lex = Lexicon(artists={"U2": 50})
+        assert lex.match_artist("U2 fan club newsletter") is None
+
+    def test_substring_match_skips_when_candidate_equals_canonical(self):
+        # The candidate matches via the exact pass already; the substring
+        # pass should not fire on `len(canonical) == len(key)`.
+        lex = Lexicon(artists={"Pearl Jam": 10})
+        assert lex.match_artist("Pearl Jam") == "Pearl Jam"
+
+    def test_substring_match_respects_min_count(self):
+        # A canonical seen only once shouldn't pull noisy candidates in.
+        lex = Lexicon(artists={"John Hiatt": 1})
+        assert lex.match_artist("John Hiatt Cotati Cabaret SDB") is None
+        assert (
+            lex.match_artist("John Hiatt Cotati Cabaret SDB", min_count=1)
+            == "John Hiatt"
+        )
+
 
 class TestMatchVenue:
     def test_exact_and_fuzzy(self):

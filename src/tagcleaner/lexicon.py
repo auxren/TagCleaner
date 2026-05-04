@@ -185,15 +185,46 @@ def _match(
         return canonical
     # Fuzzy pass — only for candidates long enough that typo-collapse is
     # informative. Short keys like "moe" are too generic for difflib.
-    if len(key) < 5:
-        return None
-    close = get_close_matches(key, index.keys(), n=1, cutoff=FUZZY_CUTOFF)
-    if not close:
-        return None
-    canonical = index[close[0]]
-    if table.get(canonical, 0) >= min_count:
-        return canonical
-    return None
+    if len(key) >= 5:
+        close = get_close_matches(key, index.keys(), n=1, cutoff=FUZZY_CUTOFF)
+        if close:
+            canonical = index[close[0]]
+            if table.get(canonical, 0) >= min_count:
+                return canonical
+    # Substring-precedence pass — when *candidate* is a known canonical with
+    # extra noise tacked on, prefer the canonical. Catches tag+folder agreements
+    # like "John Hiatt Cotati Cabaret Cotati CA SDB" that fuzzy-match can't see
+    # because the length ratio kills the similarity score. Token-bounded so
+    # "Phil Lesh" doesn't pull in "Phil Lesh & Friends" or vice versa.
+    return _substring_match(key, table, index, min_count)
+
+
+def _substring_match(
+    key: str,
+    table: dict[str, int],
+    index: dict[str, str],
+    min_count: int,
+) -> Optional[str]:
+    """Return the longest canonical name that appears as a token-bounded
+    substring of *key*, or None. The canonical must be both long enough to
+    not be a generic word (≥5 chars) and strictly shorter than *key* (so we
+    only fire on `<canonical> <extra junk>`-shaped strings)."""
+    best_canonical: Optional[str] = None
+    best_len = 4  # require canonical >= 5 chars to avoid noise like "moe"
+    for normalised, canonical in index.items():
+        if len(normalised) <= best_len or len(normalised) >= len(key):
+            continue
+        if normalised not in key:
+            continue
+        # Word-boundary check so we don't match "ozz" inside "ozzy".
+        pattern = r"(?<!\w)" + re.escape(normalised) + r"(?!\w)"
+        if not re.search(pattern, key):
+            continue
+        if table.get(canonical, 0) < min_count:
+            continue
+        best_canonical = canonical
+        best_len = len(normalised)
+    return best_canonical
 
 
 def _add(name: str, count: int, table: dict[str, int], index: dict[str, str]) -> str:
