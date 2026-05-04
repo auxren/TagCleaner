@@ -33,13 +33,29 @@ DEFAULT_DURATION_TOL = 7.0
 DEFAULT_FOLDER_THRESHOLD = 0.80
 
 
-def _try_import():
+def _try_import_acoustid():
     try:
         import acoustid
-        import chromaprint
-        return acoustid, chromaprint
+        return acoustid
     except ImportError:
-        return None, None
+        return None
+
+
+def _try_import_chromaprint():
+    """Optional. Some platforms have ``acoustid`` (which uses fpcalc directly)
+    but not ``libchromaprint``. The byte-Hamming fallback in
+    :func:`compare_fingerprints` keeps us working without the library."""
+    try:
+        import chromaprint
+        return chromaprint
+    except (ImportError, OSError):
+        return None
+
+
+def _try_import():
+    """Backward-compat shim used by the CLI: returns (acoustid_or_None,
+    chromaprint_or_None)."""
+    return _try_import_acoustid(), _try_import_chromaprint()
 
 
 def fpcalc_available() -> bool:
@@ -48,7 +64,7 @@ def fpcalc_available() -> bool:
 
 def fingerprint_file(path: Path, length: int = 120) -> tuple[float, str] | None:
     """Run fpcalc on *path*. Returns ``(duration, fingerprint)`` or None."""
-    acoustid, _ = _try_import()
+    acoustid = _try_import_acoustid()
     if acoustid is None:
         return None
     try:
@@ -60,23 +76,40 @@ def fingerprint_file(path: Path, length: int = 120) -> tuple[float, str] | None:
 
 
 def compare_fingerprints(a_fp: str, b_fp: str) -> float:
-    """Inverted bit-error rate over the shared prefix. Returns [0, 1]."""
-    _, chromaprint = _try_import()
-    if chromaprint is None:
-        return 0.0
-    try:
-        a_decoded, _ = chromaprint.decode_fingerprint(
-            a_fp.encode() if isinstance(a_fp, str) else a_fp
-        )
-        b_decoded, _ = chromaprint.decode_fingerprint(
-            b_fp.encode() if isinstance(b_fp, str) else b_fp
-        )
-    except Exception:
-        return 0.0
-    return _bit_similarity(a_decoded, b_decoded)
+    """Inverted bit-error rate. Returns similarity in ``[0, 1]``.
+
+    Prefers the proper Chromaprint decode (via ``libchromaprint``) when
+    available — that gives a smooth gradient where slightly-different
+    recordings produce slightly-lower scores. When the library isn't
+    available (no Slackware/Unraid package, static-fpcalc-only setups),
+    falls back to Hamming distance over the raw decoded base64 bytes.
+
+    The fallback is reliable for *identifying duplicates* because Chromaprint
+    encoding is deterministic — identical audio produces byte-identical
+    fingerprints, so the Hamming-on-bytes score is 1.0 for true matches.
+    Genuinely different recordings score around 0.5 (random bits). The
+    fallback is less smooth in the middle, so users testing edge cases
+    may want to install ``libchromaprint`` for a properly-calibrated
+    similarity score.
+    """
+    chromaprint = _try_import_chromaprint()
+    if chromaprint is not None:
+        try:
+            a_decoded, _ = chromaprint.decode_fingerprint(
+                a_fp.encode() if isinstance(a_fp, str) else a_fp
+            )
+            b_decoded, _ = chromaprint.decode_fingerprint(
+                b_fp.encode() if isinstance(b_fp, str) else b_fp
+            )
+        except Exception:
+            pass
+        else:
+            return _bit_similarity_int32(a_decoded, b_decoded)
+    return _bit_similarity_bytes(a_fp, b_fp)
 
 
-def _bit_similarity(a: Sequence[int], b: Sequence[int]) -> float:
+def _bit_similarity_int32(a: Sequence[int], b: Sequence[int]) -> float:
+    """Hamming-distance similarity over int32 sequences (libchromaprint path)."""
     if not a or not b:
         return 0.0
     n = min(len(a), len(b))
@@ -84,6 +117,28 @@ def _bit_similarity(a: Sequence[int], b: Sequence[int]) -> float:
     for x, y in zip(a[:n], b[:n]):
         diff += (x ^ y).bit_count()
     return 1.0 - diff / (n * 32)
+
+
+def _bit_similarity_bytes(a_fp: str, b_fp: str) -> float:
+    """Fallback: Hamming over raw base64-decoded bytes. Sufficient for
+    identifying duplicates even though it's coarser than the int32 path."""
+    import base64
+    try:
+        a = base64.urlsafe_b64decode(a_fp + "=" * (-len(a_fp) % 4))
+        b = base64.urlsafe_b64decode(b_fp + "=" * (-len(b_fp) % 4))
+    except Exception:
+        return 0.0
+    if not a or not b:
+        return 0.0
+    n = min(len(a), len(b))
+    diff = 0
+    for x, y in zip(a[:n], b[:n]):
+        diff += (x ^ y).bit_count()
+    return 1.0 - diff / (n * 8)
+
+
+# Back-compat alias so existing tests/callers using ``_bit_similarity`` keep working.
+_bit_similarity = _bit_similarity_int32
 
 
 @dataclass

@@ -737,10 +737,11 @@ def _dedupe_command(argv: list[str]) -> int:
         fingerprint_folder,
         fpcalc_available,
         pick_keeper,
-        _try_import,
+        _try_import_acoustid,
+        _try_import_chromaprint,
     )
 
-    acoustid, _chromaprint = _try_import()
+    acoustid = _try_import_acoustid()
     if acoustid is None:
         console.print(
             "[bold red]❌ pyacoustid not installed.[/] "
@@ -751,9 +752,15 @@ def _dedupe_command(argv: list[str]) -> int:
         console.print(
             "[bold red]❌ fpcalc binary not found on PATH.[/]\n"
             "  Debian/Ubuntu: [cyan]apt install libchromaprint-tools[/]\n"
-            "  macOS:         [cyan]brew install chromaprint[/]"
+            "  macOS:         [cyan]brew install chromaprint[/]\n"
+            "  Static binary: https://acoustid.org/chromaprint"
         )
         return 2
+    if _try_import_chromaprint() is None:
+        console.print(
+            "[bright_black]ℹ️  libchromaprint not loadable; using byte-Hamming "
+            "fallback for fingerprint comparison.[/]"
+        )
 
     for r in args.roots:
         if not r.is_dir():
