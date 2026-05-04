@@ -661,7 +661,10 @@ def _lexicon_import(args: argparse.Namespace) -> int:
         f"{len(counter)} unique artists, {skipped} skipped."
     )
 
-    lex = Lexicon.load_or_seed(args.lexicon)
+    # Explicit `lexicon import` is itself a seeding flow — never blend in
+    # the bundled starter, which would surprise the user with thousands of
+    # artists they didn't ask for.
+    lex = Lexicon.load(args.lexicon)
     before = set(lex.artists)
     new = sum(1 for a in counter if a not in before)
     console.print(
@@ -694,10 +697,185 @@ def _lexicon_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def _dedupe_command(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(
+        prog="tagcleaner dedupe",
+        description="Find audio-content duplicates via Chromaprint fingerprints.",
+    )
+    p.add_argument("roots", type=Path, nargs="+",
+                   help="One or more directories whose immediate child folders "
+                        "are 'shows' to compare. Pass multiple roots to dedupe "
+                        "across them (e.g. /Tapes vs /Pending Cleanup/_DUPES).")
+    p.add_argument("--apply", action="store_true",
+                   help="Delete duplicate folders for real. Default is dry-run.")
+    p.add_argument("--keep", choices=["largest", "most-tracks", "oldest", "newest"],
+                   default="largest",
+                   help="Which folder of a duplicate cluster to keep "
+                        "(default: largest by total bytes).")
+    p.add_argument("--threshold", type=float, default=0.85, metavar="F",
+                   help="Per-track Chromaprint similarity threshold "
+                        "(default: 0.85; lower is looser).")
+    p.add_argument("--folder-threshold", type=float, default=0.80, metavar="F",
+                   help="Fraction of tracks that must match to call two folders "
+                        "duplicates (default: 0.80).")
+    p.add_argument("--duration-tolerance", type=float, default=7.0, metavar="S",
+                   help="Per-track duration tolerance in seconds "
+                        "(default: 7.0; covers fade-in/out differences).")
+    p.add_argument("--cache", type=Path, metavar="FILE",
+                   help="Fingerprint cache path "
+                        "(default: <first-root>/tagcleaner-fingerprints.json).")
+    p.add_argument("--no-cache", action="store_true",
+                   help="Do not read or write the fingerprint cache.")
+    p.add_argument("--max-folders", type=int, default=0, metavar="N",
+                   help="Stop after fingerprinting N folders (0=all). "
+                        "Use to scope a first run.")
+    args = p.parse_args(argv)
+
+    from .dedupe import (
+        FingerprintCache,
+        cluster_duplicates,
+        fingerprint_folder,
+        fpcalc_available,
+        pick_keeper,
+        _try_import,
+    )
+
+    acoustid, _chromaprint = _try_import()
+    if acoustid is None:
+        console.print(
+            "[bold red]❌ pyacoustid not installed.[/] "
+            "Install with: [cyan]pip install tagcleaner[dedupe][/]"
+        )
+        return 2
+    if not fpcalc_available():
+        console.print(
+            "[bold red]❌ fpcalc binary not found on PATH.[/]\n"
+            "  Debian/Ubuntu: [cyan]apt install libchromaprint-tools[/]\n"
+            "  macOS:         [cyan]brew install chromaprint[/]"
+        )
+        return 2
+
+    for r in args.roots:
+        if not r.is_dir():
+            console.print(f"[bold red]❌ not a directory:[/] {r}")
+            return 2
+
+    cache_path: Path | None = None
+    if not args.no_cache:
+        cache_path = args.cache or (args.roots[0] / "tagcleaner-fingerprints.json")
+    cache = FingerprintCache.load(cache_path)
+    if cache.entries:
+        console.print(
+            f"[bright_black]📌 fingerprint cache: {len(cache.entries)} entries[/]"
+        )
+
+    folders: list[Path] = []
+    for r in args.roots:
+        for child in sorted(r.iterdir()):
+            if child.is_dir() and not child.name.startswith("."):
+                folders.append(child)
+    if args.max_folders:
+        folders = folders[: args.max_folders]
+    console.print(f"[cyan]🔬 fingerprinting[/] {len(folders)} folder(s) ...")
+
+    fingerprints = []
+    progress = Progress(
+        TextColumn("[cyan]🔬[/]"),
+        BarColumn(bar_width=None),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    )
+    with progress:
+        task = progress.add_task("fp", total=len(folders))
+        for folder in folders:
+            fp = fingerprint_folder(folder, cache)
+            if fp.tracks:
+                fingerprints.append(fp)
+            progress.advance(task)
+            if cache.dirty and len(cache.entries) % 50 == 0:
+                cache.save()
+    cache.save()
+    console.print(
+        f"   fingerprinted [bold]{sum(len(f.tracks) for f in fingerprints)}[/] "
+        f"track(s) across [bold]{len(fingerprints)}[/] folder(s)\n"
+    )
+
+    if len(fingerprints) < 2:
+        console.print("[yellow]🤷 Nothing to compare.[/]")
+        return 0
+
+    console.print(f"[cyan]🔗 clustering ...[/]")
+    clusters = cluster_duplicates(
+        fingerprints,
+        fp_threshold=args.threshold,
+        duration_tolerance=args.duration_tolerance,
+        folder_threshold=args.folder_threshold,
+    )
+    console.print(f"   {len(clusters)} duplicate cluster(s) found.\n")
+
+    if not clusters:
+        console.print("[green]✅ no duplicates detected.[/]")
+        return 0
+
+    table = Table(title=f"{len(clusters)} duplicate cluster(s)", show_lines=True)
+    table.add_column("Keep", overflow="fold")
+    table.add_column("Drop", overflow="fold")
+    table.add_column("Tracks", justify="right")
+    table.add_column("Size", justify="right")
+    drops: list[Path] = []
+    for cluster in clusters:
+        keeper = pick_keeper(cluster, strategy=args.keep)
+        for fp in cluster:
+            if fp is keeper:
+                continue
+            drops.append(fp.folder)
+            table.add_row(
+                str(keeper.folder),
+                str(fp.folder),
+                f"{len(fp.tracks)}",
+                _human_bytes(fp.total_size),
+            )
+    console.print(table)
+
+    if not args.apply:
+        console.print(
+            f"\n[bold cyan]🧪 Dry run.[/] {len(drops)} folder(s) would be removed. "
+            f"Pass [cyan]--apply[/] to delete."
+        )
+        return 0
+
+    console.print(f"\n[bold yellow]🗑  Deleting {len(drops)} duplicate folder(s) ...[/]")
+    failed = 0
+    for d in drops:
+        try:
+            import shutil as _sh
+            _sh.rmtree(str(d))
+            console.print(f"  [bright_black]✓ removed[/] {d}")
+        except OSError as exc:
+            console.print(f"  [red]✗ failed[/] {d}: {exc}")
+            failed += 1
+    console.print(
+        f"\n[green]✅ done.[/] removed={len(drops) - failed}, failed={failed}"
+    )
+    return 1 if failed else 0
+
+
+def _human_bytes(n: int) -> str:
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PiB"
+
+
 def main(argv: list[str] | None = None) -> int:
     raw = sys.argv[1:] if argv is None else argv
     if raw and raw[0] == "lexicon":
         return _lexicon_command(raw[1:])
+    if raw and raw[0] == "dedupe":
+        return _dedupe_command(raw[1:])
     args = _parse_args(raw)
     mode = _mode(args)
 
