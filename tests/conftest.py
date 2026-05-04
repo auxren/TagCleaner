@@ -46,6 +46,13 @@ def silent_ogg() -> Path:
 
 
 @pytest.fixture
+def silent_aif() -> Path:
+    src = FIXTURES / "silent.aif"
+    assert src.exists(), f"missing fixture {src}"
+    return src
+
+
+@pytest.fixture
 def make_flac(tmp_path, silent_flac):
     """Factory: copy the silent FLAC fixture to *dest* and return the Path."""
 
@@ -92,6 +99,16 @@ def make_ogg(tmp_path, silent_ogg):
     def _make(dest: Path) -> Path:
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(silent_ogg, dest)
+        return dest
+
+    return _make
+
+
+@pytest.fixture
+def make_aif(tmp_path, silent_aif):
+    def _make(dest: Path) -> Path:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(silent_aif, dest)
         return dest
 
     return _make

@@ -26,7 +26,7 @@ from .lexicon import Lexicon
 from .parser import build_concert
 from .models import Concert
 
-AUDIO_EXTS = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav"}
+AUDIO_EXTS = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".aif", ".aiff"}
 # Filename substrings that flag a file as checksum / tool-output rather than
 # a real info.txt. Matched case-insensitively against the lowercased name.
 # `audiochecker` catches CDDAccuracy/AudioChecker; `aucdtect` is a separate

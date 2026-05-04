@@ -16,6 +16,7 @@ from mutagen.mp4 import MP4
 from mutagen.oggvorbis import OggVorbis
 from mutagen.oggopus import OggOpus
 from mutagen.wave import WAVE
+from mutagen.aiff import AIFF
 
 from .models import Concert
 
@@ -475,8 +476,8 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool, bool]:
                 audio["discnumber"] = f"{plan.disc}/{plan.disc_total}"
         audio.save()
         return True, False, False
-    if ext in (".wav", ".wave"):
-        audio = WAVE(str(plan.dest))
+    if ext in (".wav", ".wave", ".aif", ".aiff"):
+        audio = AIFF(str(plan.dest)) if ext in (".aif", ".aiff") else WAVE(str(plan.dest))
         if audio.tags is None:
             audio.add_tags()
         if _looks_like_official_release(plan.dest.parent, audio.tags):
@@ -585,7 +586,7 @@ _MP4_ATOM_FOR_KEY = {
 class _Mp4View:
     """Dict-style read-only adapter exposing MP4 atoms under EasyID3-style
     keys, so ``_is_already_tagged`` and ``_existing_album`` work uniformly
-    across FLAC, MP3, WAV, and M4A."""
+    across FLAC, MP3, WAV, AIFF, and M4A."""
 
     __slots__ = ("_mp4",)
 
@@ -607,8 +608,8 @@ class _Mp4View:
 
 
 # ID3 frame name -> the EasyID3-style aliases that _is_already_tagged probes.
-# Lets WAV files (which carry raw ID3 frames in their tags chunk) reuse the
-# same already-tagged + existing-album checks as FLAC and MP3.
+# Lets WAV/AIFF files (which carry raw ID3 frames in their tags chunk) reuse
+# the same already-tagged + existing-album checks as FLAC and MP3.
 _ID3_FRAME_FOR_KEY = {
     "ARTIST": "TPE1", "artist": "TPE1",
     "ARTISTS": "TPE1", "ALBUMARTIST": "TPE2", "albumartist": "TPE2",
@@ -624,7 +625,7 @@ _ID3_FRAME_FOR_KEY = {
 class _Id3View:
     """Tiny dict-style read-only adapter exposing ID3 frames under
     EasyID3/Vorbis-style keys, so ``_is_already_tagged`` and
-    ``_existing_album`` work uniformly across FLAC, MP3, and WAV."""
+    ``_existing_album`` work uniformly across FLAC, MP3, WAV, and AIFF."""
 
     __slots__ = ("_id3",)
 

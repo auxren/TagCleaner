@@ -285,6 +285,37 @@ class TestApplyPlansWAV:
         assert str(tags["TPE1"]) == "Test Artist"  # untouched
 
 
+class TestApplyPlansAIFF:
+    """AIFF files carry ID3 tags in a chunk inside the FORM container; mutagen
+    reads/writes them through ``mutagen.aiff.AIFF``. Tests confirm the same
+    ARTIST/ALBUM/TRACKNUMBER pipeline works as for FLAC, MP3, and WAV."""
+
+    def test_writes_id3_to_aif(self, tmp_path: Path, make_aif):
+        from mutagen.aiff import AIFF
+        folder = tmp_path / "show"
+        audio = make_aif(folder / "01.aif")
+        tracks = [Track(number=1, title="AIFF Track")]
+        plans = build_plans(_concert(folder, [audio], tracks))
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert all(r.ok for r in results), [r.error for r in results]
+
+        tags = AIFF(str(audio)).tags
+        assert str(tags["TPE1"]) == "Test Artist"
+        assert str(tags["TPE2"]) == "Test Artist"
+        assert str(tags["TIT2"]) == "AIFF Track"
+        assert str(tags["TRCK"]) == "01"
+
+    def test_aiff_extension_variants(self, tmp_path: Path, make_aif):
+        from mutagen.aiff import AIFF
+        folder = tmp_path / "show"
+        audio = make_aif(folder / "01.aiff")
+        plans = build_plans(_concert(folder, [audio], [Track(number=1, title="A")]))
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert all(r.ok for r in results), [r.error for r in results]
+        tags = AIFF(str(audio)).tags
+        assert str(tags["TPE1"]) == "Test Artist"
+
+
 class TestApplyPlansM4A:
     """M4A files use MP4 atom names (\\xa9ART, \\xa9alb, trkn, ...). Tests
     confirm the same ARTIST/ALBUM/TRACKNUMBER pipeline writes them
