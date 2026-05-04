@@ -141,6 +141,93 @@ class TestMatchArtist:
         )
 
 
+class TestIsJunkArtistName:
+    """The junk-name guard catches meta-text that gets mistakenly tagged as
+    artist on bootleg sets. Patterns drawn from real-world lexicon-pollution
+    cases: taper handles, archive series, processing labels, disc markers."""
+
+    @pytest.mark.parametrize("name", [
+        # Disc/volume markers
+        "CD1", "Disc 2", "Disk 12", "Vol. 3", "Vol 7", "Side B", "Set 2", "Tape 4", "Part 1",
+        # Date prefixes
+        "1979-xx-xx", "19710810", "2005 September 15 New Orleans Radiators",
+        "1980-08-27 Talking Heads",
+        # Bracket / punctuation prefixes (description, not name)
+        "(Courtesy of Wes Meyette archive)",
+        "(Never Buy or Sell a PRRP Re-Master)",
+        "[Live Phish 12]",
+        "{various}",
+        "; generated on March 20",
+        ", outtakes",
+        # Taper handles / archive labels
+        "TapeTyrant Archive Series, Volume 015_Joe Jackson",
+        "1ST Generation FMSoundboard From The Krw_co Collection",
+        "A SwissBird & NaughtyKnight release",
+        "A SwissBird & SimplexSimplicissimus release",
+        "Remastered  by thir13en",
+        # Phrase patterns
+        "A Christmas Gift from Trey, December 1985",
+        "A Mystical Mermaid  NOLA Benefit show",
+        "A Digital Brother & RDWM collaboration",
+        "A Goody-Rdwm SpeedPitch-adjusted Audio Upgrade",
+        "22nd 'High Times' Cannabis Cup Awards Show",
+        # All-caps processing labels
+        "REMASTER", "REMIX",
+    ])
+    def test_known_junk_rejected(self, name):
+        from tagcleaner.lexicon import is_junk_artist_name
+        assert is_junk_artist_name(name) is True, f"expected junk: {name!r}"
+
+    @pytest.mark.parametrize("name", [
+        # Common live-music canonicals
+        "Bob Dylan", "Pearl Jam", "Phish", "moe.", "Béla Fleck",
+        "Talking Heads", "Grateful Dead", "Neil Young & Promise Of The Real",
+        "Bruce Springsteen & The E Street Band",
+        "Crosby, Stills, Nash & Young",
+        # Short / all-caps band names that are LEGIT
+        "AC/DC", "U2", "ZZ Top", "MGMT", "ABBA", "INXS", "REM", "TLC",
+        # Numbers in name but not date-prefix
+        "5 Seconds of Summer", "30 Seconds to Mars", "311",
+        # Wrapper-shape but with text after — not a bare disc marker
+        "Disc Jockey", "Tape Op",
+    ])
+    def test_legitimate_artists_pass(self, name):
+        from tagcleaner.lexicon import is_junk_artist_name
+        assert is_junk_artist_name(name) is False, f"unexpectedly flagged: {name!r}"
+
+    def test_empty_or_blank_does_not_flag_as_junk(self):
+        # Blank input is rejected by add_artist's own ValueError, not the
+        # junk guard. is_junk_artist_name returns False so callers can
+        # distinguish "blank/None" from "junk-shaped".
+        from tagcleaner.lexicon import is_junk_artist_name
+        assert is_junk_artist_name(None) is False
+        assert is_junk_artist_name("") is False
+        assert is_junk_artist_name("   ") is False
+
+
+class TestAddArtistJunkGuard:
+    """add_artist refuses junk-shaped names by default but accepts them
+    under force=True for trusted user input."""
+
+    def test_junk_name_not_added(self):
+        lex = Lexicon()
+        result = lex.add_artist("TapeTyrant Archive Series, Volume 015_Joe Jackson")
+        assert result == ""
+        assert lex.artists == {}
+
+    def test_force_overrides_junk_guard(self):
+        lex = Lexicon()
+        result = lex.add_artist("REMASTER", force=True)
+        assert result == "REMASTER"
+        assert lex.artists == {"REMASTER": 1}
+
+    def test_legitimate_name_unaffected(self):
+        lex = Lexicon()
+        result = lex.add_artist("Pearl Jam")
+        assert result == "Pearl Jam"
+        assert lex.artists == {"Pearl Jam": 1}
+
+
 class TestMatchVenue:
     def test_exact_and_fuzzy(self):
         lex = Lexicon(venues={"Fillmore East": 3, "Madison Square Garden": 5})

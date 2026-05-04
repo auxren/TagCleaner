@@ -38,6 +38,73 @@ DEFAULT_MIN_COUNT = 2
 FUZZY_CUTOFF = 0.88
 
 
+# Names that aren't artists at all but show up in tags / folder names of
+# bootleg sets and pollute the lexicon when accepted: disc/volume markers,
+# date prefixes, taper handles, archive series, processing labels. The
+# canonicalisation guards (Lexicon.add_artist, the parser's tag+folder
+# auto-add path) reject these unless force=True is passed.
+_WRAPPER_NAME_RE = re.compile(
+    # Disc/volume markers: optional whitespace, then 1-3 digits OR a single
+    # letter (Side A/B/C, Disc D).
+    r"^(?:cd|disc|disk|vol\.?|side|set|tape|part)\s*(?:\d{1,3}|[A-Z])\s*$",
+    re.IGNORECASE,
+)
+_DATE_PREFIX_RE = re.compile(
+    # 1979-xx-xx, 19710810, 2005 September 15 ...
+    r"^\d{4}[-_/ ]?(?:\d{2}[-_/ ]?\d{0,2}|x{1,2}[-_]?x{0,2}|[A-Za-z])",
+)
+_META_PREFIX_RE = re.compile(r"^[\(\[\{;:,]")
+_JUNK_KEYWORDS_RE = re.compile(
+    r"\b(?:"
+    r"files_from"           # "24_files_from_Social_Distortion..."
+    r"|tapetyrant"          # "TapeTyrant Archive Series, Volume 015..."
+    r"|swissbird|naughtyknight|simplexsimplicissimus"
+    r"|prrp|krw_co|thir13en"
+    r"|archive series"
+    r"|fm[/\s]?soundboard"
+    r"|courtesy of"
+    r"|never buy or sell"
+    r"|christmas gift from"
+    r"|mystical mermaid"
+    r"|digital brother"
+    r"|nola benefit"
+    r"|cannabis cup"
+    r"|goody-?rdwm"
+    r"|speed[\s/]?pitch"
+    r"|generated on"
+    r"|re-?master(?:ed)?\s*\*"      # "Remastered ** by thir13en"
+    r"|^re-?master\s*$|^re-?master(?:ed)?$"  # bare REMASTER token
+    r"|^remix(?:ed)?\s*$"           # bare REMIX token
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def is_junk_artist_name(name: str | None) -> bool:
+    """Return True when *name* looks like meta-text rather than an artist
+    name and should not enter the lexicon. Catches disc markers, date
+    prefixes, taper signatures, archive-series labels, and a curated set
+    of phrase patterns observed polluting real-world live-music libraries.
+    """
+    if not name:
+        return False
+    s = name.strip()
+    if not s or len(s) < 2:
+        return bool(s)  # blank handled separately by _add; len==1 is junk
+    if _WRAPPER_NAME_RE.match(s):
+        return True
+    if _DATE_PREFIX_RE.match(s):
+        return True
+    if _META_PREFIX_RE.match(s):
+        return True
+    if _JUNK_KEYWORDS_RE.search(s):
+        return True
+    # Bare REMASTER / REMIX-style processing tags written all-caps.
+    if s.isupper() and len(s) >= 6 and s.isalpha():
+        return True
+    return False
+
+
 def normalize_name(s: str) -> str:
     """Fold *s* for equality: lowercase, strip ``The `` prefix, drop
     punctuation, collapse whitespace. Returns an empty string when *s*
@@ -76,11 +143,20 @@ class Lexicon:
     ) -> Optional[str]:
         return _match(candidate, self.venues, self._venue_index, min_count)
 
-    def add_artist(self, name: str, count: int = 1) -> str:
+    def add_artist(self, name: str, count: int = 1, *, force: bool = False) -> str:
         """Add *name* to the lexicon (or bump its count) and return the
         canonical spelling now stored. A user-supplied name that
         normalises to an existing entry merges with it; a brand-new name
-        is kept verbatim."""
+        is kept verbatim.
+
+        Names that look like meta-text rather than artists (disc markers,
+        date prefixes, taper signatures — see :func:`is_junk_artist_name`)
+        are silently rejected and the empty string is returned. Pass
+        ``force=True`` to override — useful for explicit user input that
+        the lexicon should trust over the heuristic.
+        """
+        if not force and is_junk_artist_name(name):
+            return ""
         return _add(name, count, self.artists, self._artist_index)
 
     def add_venue(self, name: str, count: int = 1) -> str:

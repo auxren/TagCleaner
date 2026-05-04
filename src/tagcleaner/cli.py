@@ -88,6 +88,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--minimal-tags", action="store_true",
                    help="Write only ARTIST, ALBUMARTIST, ALBUM, and TRACKNUMBER. "
                         "Leave any existing DATE/TITLE/DISC tags untouched.")
+    p.add_argument("--audio-fingerprint", action="store_true",
+                   help="Use Chromaprint audio fingerprints as a second-chance "
+                        "skip signal in history. Re-encodes that change file size "
+                        "but preserve audio content (FLAC compression-level swap, "
+                        "format conversion) become free no-ops on subsequent runs. "
+                        "Requires the fpcalc binary on PATH.")
     p.add_argument("--min-confidence", type=float, default=0.5,
                    help="Skip concerts below this confidence in non-dry-run modes (default: 0.5).")
     p.add_argument("--track-tolerance", type=int, default=-1, metavar="N",
@@ -165,6 +171,7 @@ def _scan_with_progress(
     plain: bool = False,
     lexicon: Lexicon | None = None,
     exclude: list[str] | None = None,
+    audio_sig_fn=None,
 ) -> tuple[list[tuple[Concert, str, float]], list[HistoryEntry]]:
     """Run scanner.scan() behind a progress UI.
 
@@ -191,11 +198,28 @@ def _scan_with_progress(
         return False
 
     def _skip(folder: Path, fp: str) -> bool:
-        if rescan_all:
+        if rescan_all and audio_sig_fn is None:
             return False
         entry = history.get(folder)
-        if history_should_skip(entry, fp, mode, copy_to):
-            skipped.append(entry)  # type: ignore[arg-type]  # guarded by should_skip
+        # When audio fingerprinting is enabled, ALWAYS try the audio path,
+        # even under --rescan-all. This lets a "smart rescan-all" skip
+        # folders whose audio content hasn't changed even when name/size
+        # would say otherwise.
+        audio_sig = None
+        if audio_sig_fn is not None and entry is not None and entry.audio_signature is not None:
+            audio_sig = audio_sig_fn(folder)
+        if rescan_all:
+            # In rescan-all mode, the only way to skip is via the audio path.
+            if audio_sig is None:
+                return False
+            if history_should_skip(entry, fp, mode, copy_to,
+                                   current_audio_signature=audio_sig):
+                skipped.append(entry)  # type: ignore[arg-type]
+                return True
+            return False
+        if history_should_skip(entry, fp, mode, copy_to,
+                               current_audio_signature=audio_sig):
+            skipped.append(entry)  # type: ignore[arg-type]
             return True
         return False
 
@@ -332,7 +356,9 @@ def _prompt_unknown_artists(
         if not answer:
             continue
         canonical = lexicon.match_artist(answer) or answer
-        lexicon.add_artist(canonical, count=len(siblings))
+        # User explicitly typed this name — trust it over the junk-shape
+        # heuristic so e.g. an unusual real artist isn't silently dropped.
+        lexicon.add_artist(canonical, count=len(siblings), force=True)
         for c in siblings:
             c.artist = canonical
             if "artist unknown" in c.issues:
@@ -896,6 +922,34 @@ def main(argv: list[str] | None = None) -> int:
             f"{len(lexicon.venues)} venues[/]"
         )
 
+    # --audio-fingerprint: build a Chromaprint cache + signature function so
+    # the scanner can second-chance-skip folders whose audio is unchanged.
+    audio_sig_fn = None
+    fp_cache_for_audio_sig = None
+    if args.audio_fingerprint:
+        from .dedupe import (
+            FingerprintCache,
+            folder_audio_signature,
+            fpcalc_available,
+        )
+        if not fpcalc_available():
+            console.print(
+                "[yellow]⚠️  --audio-fingerprint needs the fpcalc binary on PATH; "
+                "disabled for this run.[/]"
+            )
+        else:
+            fp_cache_path = (
+                args.path / "tagcleaner-fingerprints.json"
+                if args.path.is_dir() else None
+            )
+            fp_cache_for_audio_sig = FingerprintCache.load(fp_cache_path)
+            console.print(
+                f"[bright_black]🔬 audio-fingerprint cache: "
+                f"{len(fp_cache_for_audio_sig.entries)} track(s)[/]"
+            )
+            def audio_sig_fn(folder: Path) -> str | None:
+                return folder_audio_signature(folder, fp_cache_for_audio_sig)
+
     skipped_entries: list[HistoryEntry] = []
     if args.load_drafts:
         concerts = load_drafts(args.load_drafts)
@@ -913,10 +967,14 @@ def main(argv: list[str] | None = None) -> int:
             plain=args.plain,
             lexicon=lexicon,
             exclude=args.exclude,
+            audio_sig_fn=audio_sig_fn,
         )
         concerts = [c for c, _fp, _mt in fresh]
         for concert, fp, mtime in fresh:
-            history.record_scan(concert, fp, mtime)
+            sig = audio_sig_fn(concert.folder) if audio_sig_fn is not None else None
+            history.record_scan(concert, fp, mtime, audio_signature=sig)
+        if fp_cache_for_audio_sig is not None:
+            fp_cache_for_audio_sig.save()
         if skipped_entries:
             console.print(
                 f"[green]   found[/] [bold]{len(concerts)}[/] fresh, "
