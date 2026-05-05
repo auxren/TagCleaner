@@ -283,11 +283,14 @@ def _is_already_tagged(plan: TagPlan, tags) -> bool:
     if plan.artist:
         if existing_artist != plan.artist:
             return False
-        # Also require ALBUMARTIST to match when we'd write it. In minimal
-        # mode we write both ARTIST and ALBUMARTIST — if ALBUMARTIST lags
-        # behind (e.g. unchanged from old Plex VA grouping), rewrite.
+        # ALBUMARTIST must be present AND match. Treating "missing" as
+        # "already tagged" was a real bug — files arrived from old transfers
+        # with ARTIST + TRACKNUMBER + ALBUM but no ALBUMARTIST, which
+        # _is_already_tagged would accept and the album-only branch would
+        # then never write ALBUMARTIST. The result: shows that surface as
+        # blank under Plex's "By Album Artist" view, run after run.
         existing_aa = _tag_value(tags, "ALBUMARTIST", "albumartist")
-        if existing_aa and existing_aa != plan.artist:
+        if not existing_aa or existing_aa != plan.artist:
             return False
     elif not existing_artist:
         # No plan artist, no existing artist — nothing to enforce.
