@@ -1676,6 +1676,10 @@ def build_concert(
     source = detect_source(folder_name, filenames, body)
 
     tracks = _finalize_tracks(parsed.get("setlist", []))
+    # Filename-derived fallback when info.txt yielded no setlist: many
+    # well-organised bootlegs label tracks via filenames (`01 - Title.flac`).
+    if not tracks and audio:
+        tracks = derive_tracks_from_filenames(audio)
 
     issues: list[str] = []
     if not artist:
@@ -1750,6 +1754,49 @@ def _city_from_folder(name: str) -> tuple[str | None, str | None]:
     if m:
         return m.group(1).strip(), m.group(2)
     return None, None
+
+
+_FILENAME_TRACK_RE = re.compile(r"^\s*(\d{1,3})\s*[-._]+\s*(.+?)\s*$")
+# Etree / SHN-style track codes that aren't real titles, even when caught by
+# the leading-digit pattern: "d1t05", "t12", bare dates, etc.
+_FILENAME_TRACK_NONTITLE = re.compile(
+    r"^(?:d\d+t\d+|t\d+|disc\s*\d+|track\s*\d+|\d{4}[-._]\d{2}[-._]\d{2})$",
+    re.IGNORECASE,
+)
+
+
+def derive_tracks_from_filenames(audio: list[Path]) -> list[Track]:
+    """Build a Track list from audio filenames when the info.txt-based
+    setlist is empty.
+
+    Recognises the well-organised-bootleg pattern ``NN - Title.ext`` /
+    ``NN. Title.ext`` / ``NN_Title.ext``. Requires ≥80% of files to match
+    the pattern (rejects mixed cases and etree-style ``gd1977-05-08d2t05``
+    filenames where the captured 'title' is just a track code).
+    """
+    if not audio:
+        return []
+    real_audio = [f for f in audio if not f.name.startswith("._")]
+    if not real_audio:
+        return []
+    parsed: list[tuple[int, str]] = []
+    for f in real_audio:
+        m = _FILENAME_TRACK_RE.match(f.stem)
+        if not m:
+            continue
+        try:
+            num = int(m.group(1))
+        except ValueError:
+            continue
+        title = m.group(2).strip(" .-_,")
+        if not title or len(title) < 2:
+            continue
+        if _FILENAME_TRACK_NONTITLE.match(title):
+            continue
+        parsed.append((num, title))
+    if len(parsed) < max(2, int(0.8 * len(real_audio))):
+        return []
+    return [Track(number=n, title=t) for n, t in parsed]
 
 
 def _finalize_tracks(raw: list[tuple[int | None, str]]) -> list[Track]:

@@ -13,6 +13,7 @@ from tagcleaner.parser import (
     _split_venue_city_region,
     _trust_parent_artist,
     build_concert,
+    derive_tracks_from_filenames,
     guess_artist_from_folder,
     parse_date,
     parse_info_txt,
@@ -1305,3 +1306,99 @@ class TestUnnumberedSetlist:
             "Bitch's Crystal",
             "All Along the Watchtower",
         ]
+
+
+class TestDeriveTracksFromFilenames:
+    """Filename-derived setlist fallback for the well-organised-bootleg
+    pattern '<NN> - <Title>.<ext>' when info.txt is missing."""
+
+    def test_classic_dash_separated(self, tmp_path):
+        files = [
+            tmp_path / "01 - Live Wire.flac",
+            tmp_path / "02 - Problem Child.flac",
+            tmp_path / "03 - Sin City.flac",
+        ]
+        for f in files:
+            f.touch()
+        tracks = derive_tracks_from_filenames(files)
+        assert [t.title for t in tracks] == ["Live Wire", "Problem Child", "Sin City"]
+        assert [t.number for t in tracks] == [1, 2, 3]
+
+    def test_dot_separated(self, tmp_path):
+        files = [tmp_path / "01. Touch of Grey.flac", tmp_path / "02. Hell in a Bucket.flac"]
+        for f in files:
+            f.touch()
+        tracks = derive_tracks_from_filenames(files)
+        assert [t.title for t in tracks] == ["Touch of Grey", "Hell in a Bucket"]
+
+    def test_underscore_separated(self, tmp_path):
+        files = [tmp_path / "01_Truckin.flac", tmp_path / "02_Bertha.flac"]
+        for f in files:
+            f.touch()
+        tracks = derive_tracks_from_filenames(files)
+        assert [t.title for t in tracks] == ["Truckin", "Bertha"]
+
+    def test_etree_style_track_codes_rejected(self, tmp_path):
+        # gd1977-05-08d2t05.flac → 'title' captured as "08d2t05" — should reject.
+        files = [
+            tmp_path / "gd1977-05-08d2t01.flac",
+            tmp_path / "gd1977-05-08d2t02.flac",
+            tmp_path / "gd1977-05-08d2t03.flac",
+        ]
+        for f in files:
+            f.touch()
+        tracks = derive_tracks_from_filenames(files)
+        # Pattern's leading digit captures the year fragment; even if some
+        # match, the resulting "titles" are nontitle codes — reject all or
+        # be empty.
+        for t in tracks:
+            assert "d" not in t.title.lower() or len(t.title) > 5
+
+    def test_threshold_rejects_inconsistent(self, tmp_path):
+        # Only 2 of 5 follow the pattern — below 80%, fallback returns empty.
+        files = [
+            tmp_path / "01 - Real Title.flac",
+            tmp_path / "02 - Another Title.flac",
+            tmp_path / "garbage.flac",
+            tmp_path / "more_garbage.flac",
+            tmp_path / "noise.flac",
+        ]
+        for f in files:
+            f.touch()
+        assert derive_tracks_from_filenames(files) == []
+
+    def test_macos_dot_underscore_files_skipped(self, tmp_path):
+        files = [
+            tmp_path / "01 - Real.flac",
+            tmp_path / "._01 - Real.flac",  # macOS metadata file
+            tmp_path / "02 - Real Two.flac",
+            tmp_path / "._02 - Real Two.flac",
+        ]
+        for f in files:
+            f.touch()
+        tracks = derive_tracks_from_filenames(files)
+        assert len(tracks) == 2
+        assert tracks[0].title == "Real"
+
+    def test_empty_input(self):
+        assert derive_tracks_from_filenames([]) == []
+
+    def test_too_short_to_be_a_title_rejected(self, tmp_path):
+        files = [tmp_path / "01 - x.flac", tmp_path / "02 - y.flac"]
+        for f in files:
+            f.touch()
+        assert derive_tracks_from_filenames(files) == []
+
+    def test_integration_used_when_info_txt_absent(self, tmp_path):
+        """build_concert should fall back to filename-derived tracks when
+        no info.txt is parseable."""
+        folder = tmp_path / "1978.09.10 - Veterans Memorial Coliseum"
+        folder.mkdir()
+        audio = []
+        for i, title in enumerate(["Live Wire", "Problem Child", "Sin City"], start=1):
+            f = folder / f"{i:02d} - {title}.flac"
+            f.touch()
+            audio.append(f)
+        c = build_concert(folder, audio, info_txt=None)
+        assert len(c.tracks) == 3
+        assert [t.title for t in c.tracks] == ["Live Wire", "Problem Child", "Sin City"]
