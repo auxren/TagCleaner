@@ -102,6 +102,67 @@ class TestApplyPlansDryRun:
         assert "ARTIST" not in f
 
 
+class TestApplyPlansVanished:
+    """A long rescan can race with a daemon that's actively moving files.
+    A vanished source file is reported as a benign skip with `vanished=True`,
+    not as a failure — keeps the log uncluttered with thousands of
+    'No such file or directory' entries that have a known cause."""
+
+    def test_pre_open_missing_file_reports_vanished(self, tmp_path: Path, make_flac):
+        folder = tmp_path / "show"
+        audio = make_flac(folder / "01.flac")
+        plans = build_plans(_concert(folder, [audio], [Track(number=1, title="A")]))
+        # Move the file out from under us before apply_plans runs.
+        audio.unlink()
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert len(results) == 1
+        r = results[0]
+        assert r.ok is True       # NOT a failure
+        assert r.vanished is True
+        assert r.changed is False
+
+    def test_mutagen_no_such_file_is_demoted_to_vanished(self, tmp_path: Path, make_flac):
+        folder = tmp_path / "show"
+        audio = make_flac(folder / "01.flac")
+        plans = build_plans(_concert(folder, [audio], [Track(number=1, title="A")]))
+
+        # Replace _write_tags with one that raises a mutagen-style "No such
+        # file or directory" message — what mutagen wraps OSError(2) as.
+        from tagcleaner import tagger
+        from mutagen import MutagenError
+
+        def _raises_no_such_file(plan):
+            raise MutagenError("[Errno 2] No such file or directory: '/x'")
+
+        original = tagger._write_tags
+        tagger._write_tags = _raises_no_such_file
+        try:
+            results = apply_plans(plans, Mode.IN_PLACE)
+        finally:
+            tagger._write_tags = original
+        r = results[0]
+        assert r.ok is True
+        assert r.vanished is True
+
+    def test_other_errors_still_fail(self, tmp_path: Path, make_flac):
+        # Sanity check: a real error (not a missing-file race) still surfaces
+        # as ok=False so it isn't silently swallowed by the vanished path.
+        folder = tmp_path / "show"
+        audio = make_flac(folder / "01.flac")
+        plans = build_plans(_concert(folder, [audio], [Track(number=1, title="A")]))
+        from tagcleaner import tagger
+        original = tagger._write_tags
+        tagger._write_tags = lambda plan: (_ for _ in ()).throw(RuntimeError("disk on fire"))
+        try:
+            results = apply_plans(plans, Mode.IN_PLACE)
+        finally:
+            tagger._write_tags = original
+        r = results[0]
+        assert r.ok is False
+        assert r.vanished is False
+        assert "disk on fire" in r.error
+
+
 class TestApplyPlansInPlaceFLAC:
     def test_writes_vorbis_tags(self, tmp_path: Path, make_flac):
         folder = tmp_path / "show"
@@ -381,14 +442,18 @@ class TestApplyPlansOgg:
 
 
 class TestApplyPlansError:
-    def test_missing_file_is_reported(self, tmp_path: Path, make_flac):
+    def test_missing_file_is_reported_as_vanished(self, tmp_path: Path, make_flac):
+        # A vanished source isn't an error — it's a race. apply_plans
+        # demotes it to ok=True with vanished=True; see TestApplyPlansVanished
+        # for the full contract.
         folder = tmp_path / "show"
         audio = make_flac(folder / "01.flac")
         plan = build_plans(_concert(folder, [audio], [Track(number=1, title="A")]))[0]
         audio.unlink()  # remove before apply
         results = apply_plans([plan], Mode.IN_PLACE)
-        assert results[0].ok is False
-        assert results[0].error
+        assert results[0].ok is True
+        assert results[0].vanished is True
+        assert results[0].error is None
 
 
 class TestAlreadyTaggedSkip:

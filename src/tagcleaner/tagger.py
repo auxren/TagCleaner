@@ -55,6 +55,10 @@ class TagResult:
     skipped_official: bool = False  # True when file was left untouched
                                     # because it looks like an official release
                                     # (Dick's Picks, Road Trips, MB-tagged, etc.)
+    vanished: bool = False     # True when the source file was gone by the time
+                               # we tried to open it — typically a concurrent
+                               # mover (daemon, rsync) raced with the rescan.
+                               # Reported as a benign skip rather than a failure.
 
 
 def build_plans(
@@ -205,13 +209,32 @@ def apply_plans(plans: list[TagPlan], mode: Mode) -> list[TagResult]:
                 plan.dest.parent.mkdir(parents=True, exist_ok=True)
                 if not plan.dest.exists() or plan.dest.stat().st_size != plan.file.stat().st_size:
                     shutil.copy2(plan.file, plan.dest)
+            # Race-condition guard: a long rescan can run alongside a
+            # daemon that's actively moving folders. By the time we go to
+            # open this file, it may have been moved out from under us. A
+            # vanished source is a benign skip, not a failure — don't
+            # spam the log with thousands of "MutagenError: No such file"
+            # entries that have a known cause.
+            if not plan.dest.exists():
+                results.append(TagResult(plan=plan, ok=True, changed=False, vanished=True))
+                continue
             changed, album_only, skipped_official = _write_tags(plan)
             results.append(TagResult(
                 plan=plan, ok=True, changed=changed, album_only=album_only,
                 skipped_official=skipped_official,
             ))
+        except FileNotFoundError:
+            # File got moved/deleted while we were reading it. Same as the
+            # pre-open guard above — silent skip, not a failure.
+            results.append(TagResult(plan=plan, ok=True, changed=False, vanished=True))
         except Exception as exc:  # noqa: BLE001 - we want to report every failure
-            results.append(TagResult(plan=plan, ok=False, error=f"{type(exc).__name__}: {exc}"))
+            # mutagen wraps the OSError in MutagenError; sniff the message
+            # for the same race signal so we don't double-count it.
+            msg = str(exc)
+            if "No such file or directory" in msg or "[Errno 2]" in msg:
+                results.append(TagResult(plan=plan, ok=True, changed=False, vanished=True))
+            else:
+                results.append(TagResult(plan=plan, ok=False, error=f"{type(exc).__name__}: {exc}"))
     return results
 
 

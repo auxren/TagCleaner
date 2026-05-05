@@ -445,6 +445,7 @@ def _apply(
     applied = 0
     album_only = 0
     unchanged = 0
+    vanished = 0
     verb = "tagged" if mode is Mode.IN_PLACE else "copied"
     copy_to_str = str(args.copy_to.resolve()) if args.copy_to else None
     for c in concerts:
@@ -514,6 +515,12 @@ def _apply(
                 folder_fails += 1
                 console.print(f"    [bold red]❌ FAIL[/] {r.plan.file.name}: {r.error}")
                 continue
+            if r.vanished:
+                # File was moved/deleted by a concurrent mover (daemon, rsync,
+                # etc.) before we could tag it. Benign — count it but don't
+                # spam per-file output.
+                vanished += 1
+                continue
             applied += 1
             folder_ok += 1
             if r.skipped_official:
@@ -561,6 +568,7 @@ def _apply(
         f"[cyan]album-only[/]={album_only}  "
         f"[bright_black]unchanged[/]={unchanged}  "
         f"[yellow]skipped[/]={skipped}  "
+        f"[bright_black]vanished[/]={vanished}  "
         f"[red]failed[/]={failures}  "
         f"[cyan]mode[/]={mode.value}"
     )
@@ -908,6 +916,141 @@ def _dedupe_command(argv: list[str]) -> int:
     return 1 if failed else 0
 
 
+def _stats_command(argv: list[str]) -> int:
+    """Per-artist breakdown built from the recorded history."""
+    p = argparse.ArgumentParser(
+        prog="tagcleaner stats",
+        description="Per-artist breakdown of show count, format mix, "
+                    "date range, and tagging health from the history file.",
+    )
+    p.add_argument("path", type=Path,
+                   help="Library root that contains tagcleaner-history.json.")
+    p.add_argument("--top", type=int, default=20, metavar="N",
+                   help="Show the top N artists by show count (default: 20).")
+    p.add_argument("--issues", action="store_true",
+                   help="List folders flagged with issues (low confidence, "
+                        "missing tags, mismatched track counts).")
+    args = p.parse_args(argv)
+
+    if not args.path.is_dir():
+        console.print(f"[bold red]❌ not a directory:[/] {args.path}")
+        return 2
+
+    history_path = args.path / HISTORY_FILENAME
+    if not history_path.exists():
+        console.print(f"[bold red]❌ no history at:[/] {history_path}")
+        return 2
+
+    history = load_history(history_path)
+    if not history.entries:
+        console.print(f"[yellow]🤷 history empty.[/]")
+        return 0
+
+    from collections import Counter, defaultdict
+    artist_shows: Counter[str] = Counter()
+    artist_tracks: Counter[str] = Counter()
+    artist_dates: defaultdict[str, list[str]] = defaultdict(list)
+    artist_formats: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    issues: list[tuple[str, float, list[str]]] = []  # (folder, confidence, issues)
+    total_audio_files = 0
+    formats_global: Counter[str] = Counter()
+    confidences: list[float] = []
+    no_artist = 0
+    low_confidence = 0
+    no_setlist = 0
+
+    for entry in history.entries.values():
+        c = entry.concert or {}
+        artist = (c.get("artist") or "").strip() or "(unknown)"
+        if artist == "(unknown)":
+            no_artist += 1
+        date = (c.get("date") or "").strip()
+        confidence = float(c.get("confidence") or 0.0)
+        confidences.append(confidence)
+        if confidence < 0.5:
+            low_confidence += 1
+        tracks = c.get("tracks") or []
+        if not tracks:
+            no_setlist += 1
+        audio = c.get("audio_files") or []
+        artist_shows[artist] += 1
+        artist_tracks[artist] += len(audio)
+        if date:
+            artist_dates[artist].append(date)
+        for f in audio:
+            ext = Path(f).suffix.lower()
+            artist_formats[artist][ext] += 1
+            formats_global[ext] += 1
+            total_audio_files += 1
+        if c.get("issues"):
+            issues.append((entry.folder, confidence, list(c["issues"])))
+
+    # Library totals
+    total_shows = sum(artist_shows.values())
+    distinct_artists = sum(1 for a in artist_shows if a != "(unknown)")
+    avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
+
+    console.print()
+    console.print(f"[bold cyan]📚 {args.path}[/]")
+    console.print(
+        f"   shows: [bold]{total_shows}[/]  "
+        f"artists: [bold]{distinct_artists}[/]  "
+        f"audio files: [bold]{total_audio_files}[/]  "
+        f"avg confidence: [bold]{avg_conf:.2f}[/]"
+    )
+    console.print(
+        f"   no-artist: [yellow]{no_artist}[/]  "
+        f"low-confidence: [yellow]{low_confidence}[/]  "
+        f"no-setlist: [yellow]{no_setlist}[/]"
+    )
+    console.print()
+
+    # Format mix
+    if formats_global:
+        fmt_table = Table(title="Format mix", show_lines=False)
+        fmt_table.add_column("Extension")
+        fmt_table.add_column("Files", justify="right")
+        fmt_table.add_column("Share", justify="right")
+        for ext, n in formats_global.most_common():
+            fmt_table.add_row(ext or "(none)", f"{n:,}", f"{100 * n / total_audio_files:.1f}%")
+        console.print(fmt_table)
+        console.print()
+
+    # Top artists
+    top_table = Table(title=f"Top {args.top} artists by show count", show_lines=False)
+    top_table.add_column("Artist", overflow="fold")
+    top_table.add_column("Shows", justify="right")
+    top_table.add_column("Tracks", justify="right")
+    top_table.add_column("Date range", overflow="fold")
+    top_table.add_column("Formats", overflow="fold")
+    for artist, n in artist_shows.most_common(args.top):
+        dates = sorted(d for d in artist_dates[artist] if d)
+        date_range = "—"
+        if dates:
+            date_range = dates[0] if dates[0] == dates[-1] else f"{dates[0]} … {dates[-1]}"
+        fmt_summary = ", ".join(
+            f"{ext}:{count}" for ext, count in artist_formats[artist].most_common(3)
+        )
+        top_table.add_row(artist, f"{n}", f"{artist_tracks[artist]}", date_range, fmt_summary)
+    console.print(top_table)
+
+    # Issues report
+    if args.issues and issues:
+        issues.sort(key=lambda t: t[1])  # lowest confidence first
+        console.print()
+        issues_table = Table(title=f"{len(issues)} folder(s) with issues", show_lines=False)
+        issues_table.add_column("Conf", justify="right")
+        issues_table.add_column("Folder", overflow="fold")
+        issues_table.add_column("Issues", overflow="fold")
+        for folder, conf, lst in issues[:50]:
+            issues_table.add_row(f"{conf:.2f}", folder, "; ".join(lst))
+        console.print(issues_table)
+        if len(issues) > 50:
+            console.print(f"[bright_black]   ... +{len(issues) - 50} more (use --issues output to a pager)[/]")
+
+    return 0
+
+
 def _human_bytes(n: int) -> str:
     for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
         if n < 1024:
@@ -922,6 +1065,8 @@ def main(argv: list[str] | None = None) -> int:
         return _lexicon_command(raw[1:])
     if raw and raw[0] == "dedupe":
         return _dedupe_command(raw[1:])
+    if raw and raw[0] == "stats":
+        return _stats_command(raw[1:])
     args = _parse_args(raw)
     mode = _mode(args)
 
