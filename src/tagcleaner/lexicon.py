@@ -80,6 +80,21 @@ _JUNK_KEYWORDS_RE = re.compile(
 )
 
 
+# Tribute / salute / plays-shaped phrases. When the candidate artist string
+# contains one of these, the substring-precedence guard refuses to apply —
+# the named artist isn't who's playing, they're who's being honored. Caught
+# real-world misroutes like "Kermit Ruffins' Tribute to Louis Armstrong" →
+# Louis Armstrong (wrong; Kermit Ruffins is the performing act).
+_TRIBUTE_RE = re.compile(
+    r"\b(?:tribute|salute|plays|sings|memorial|in memoriam|"
+    r"covers|covering|honor|honoring|honors|"
+    r"performs?|performing|interpret|interprets|interpreting|"
+    r"revisit(?:s|ed|ing)?|reimagine[ds]?|reimagining|"
+    r"songs of|music of|songbook|in the style of)\b",
+    re.IGNORECASE,
+)
+
+
 def is_junk_artist_name(name: str | None) -> bool:
     """Return True when *name* looks like meta-text rather than an artist
     name and should not enter the lexicon. Catches disc markers, date
@@ -284,7 +299,16 @@ def _substring_match(
     """Return the longest canonical name that appears as a token-bounded
     substring of *key*, or None. The canonical must be both long enough to
     not be a generic word (≥5 chars) and strictly shorter than *key* (so we
-    only fire on `<canonical> <extra junk>`-shaped strings)."""
+    only fire on `<canonical> <extra junk>`-shaped strings).
+
+    Refuses to fire when *key* contains tribute / salute / plays-shaped
+    keywords. Tribute albums name the honored artist in the title, but the
+    performing artist is different — e.g. ``"Kermit Ruffins' Tribute to
+    Louis Armstrong"`` would otherwise route to Louis Armstrong even though
+    Kermit Ruffins is who's actually playing.
+    """
+    if _TRIBUTE_RE.search(key):
+        return None
     best_canonical: Optional[str] = None
     best_len = 4  # require canonical >= 5 chars to avoid noise like "moe"
     for normalised, canonical in index.items():

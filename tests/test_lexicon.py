@@ -131,6 +131,46 @@ class TestMatchArtist:
         lex = Lexicon(artists={"Pearl Jam": 10})
         assert lex.match_artist("Pearl Jam") == "Pearl Jam"
 
+    def test_substring_match_refuses_tribute_albums(self):
+        # "Kermit Ruffins' Tribute to Louis Armstrong" must NOT route to
+        # Louis Armstrong — Kermit is the performing artist; Louis is being
+        # honored. Caught a real-world misroute.
+        lex = Lexicon(artists={
+            "Louis Armstrong": 30,
+            "Kermit Ruffins": 5,
+        })
+        assert lex.match_artist("Kermit Ruffins' Tribute to Louis Armstrong") is None
+
+    @pytest.mark.parametrize("candidate", [
+        "Eddie Vedder Plays Bruce Springsteen",
+        "Wynton Marsalis salute to Duke Ellington",
+        "Susan Tedeschi Sings Aretha Franklin",
+        "John Legend covers Stevie Wonder",
+        "An Evening Honoring The Beatles",
+        "Bob Weir performs Grateful Dead",
+        "JRAD covering Garcia",
+        "The Songs of Leonard Cohen",
+        "Music of Bob Dylan",
+        "Brad Mehldau interprets Radiohead",
+    ])
+    def test_substring_match_refuses_tribute_keywords(self, candidate):
+        lex = Lexicon(artists={
+            "Bruce Springsteen": 100, "Duke Ellington": 50,
+            "Aretha Franklin": 30, "Stevie Wonder": 50,
+            "The Beatles": 200, "Grateful Dead": 500,
+            "Garcia": 20, "Leonard Cohen": 40,
+            "Bob Dylan": 100, "Radiohead": 60,
+        })
+        assert lex.match_artist(candidate) is None, (
+            f"tribute-shaped {candidate!r} should not substring-match"
+        )
+
+    def test_substring_match_still_works_for_legit_overflow(self):
+        # The non-tribute case still resolves: a junk-overflow string with a
+        # known artist as substring routes to the artist.
+        lex = Lexicon(artists={"John Hiatt": 30})
+        assert lex.match_artist("John Hiatt Cotati Cabaret SDB") == "John Hiatt"
+
     def test_substring_match_respects_min_count(self):
         # A canonical seen only once shouldn't pull noisy candidates in.
         lex = Lexicon(artists={"John Hiatt": 1})
