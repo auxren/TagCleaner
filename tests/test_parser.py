@@ -890,6 +890,21 @@ class TestProseAndLineageRejection:
         "Taping gear: Schoeps MK4 / Nakamichi 550",
         # "From bootleg ..." attribution.
         "From bootleg; \"The Happiest Night Of Our Lives\", manufactured by Comunidad Floydiana in Chile.",
+        # "Visit www…" / "Visit https…" — tape-trading URL banners that
+        # leaked through as ALBUMARTIST on multiple SHN-rip Genesis & Camel
+        # shows in real-world data.
+        "Visit www.from1fan2allothers.com",
+        "Visit https://example-bootlegs.com for trade list",
+        "Visit our website at www.example.com",
+        # Labeled "Performer:" line — "Performer: Band" became the ARTIST
+        # tag on /Tapes/The Band/1983-10-28/.
+        "Performer: Band",
+        "Performer - Phil Lesh",
+        # auCDtect tool banner.
+        "auCDtect: CD records authenticity detector v0.8.8",
+        # PRRP catalog id banner.
+        "PRRP020-GENESIS",
+        "PRRP http://from1fan2allothers.com",
     ])
     def test_bogus_line_followed_by_real_artist(self, bad_line):
         # Bad line first, real artist on line 2 — parser must skip the bad

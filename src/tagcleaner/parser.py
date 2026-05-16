@@ -968,10 +968,13 @@ def parse_info_txt(body: str) -> dict:
 _NOISE_FIRST_LINE = re.compile(
     r"^(?:no\s+errors?|errors?\s+found|\s*$|"
     r"https?://|www\.|"
+    r"visit\s+(?:www\.|https?://|our\s+)|"
+    r"performer\s*[:\-]|"
     r"\d+\s*(?:kbps|khz|bit|byte|mb|gb)|"
     r"flac\s+fingerprint|md5|sha\d+|"
     r"tracklist|setlist|recording\s+info|lineage|source|notes?|file\s*info|"
-    r"audiochecker|shntool|sbe(?:ok)?|ffp|checksum)",
+    r"audiochecker|aucdtect|shntool|sbe(?:ok)?|ffp|checksum|"
+    r"(?:prrp|tsbf|evsd|jems)\s*(?:gs|sae|\d|http))",
     re.I,
 )
 
