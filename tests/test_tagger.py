@@ -191,8 +191,57 @@ class TestApplyPlansInPlaceFLAC:
         results = apply_plans(plans, Mode.IN_PLACE)
         assert all(r.ok for r in results)
         f1 = FLAC(str(audio[0]))
-        assert f1["DISCNUMBER"] == ["1"]
+        assert f1["DISCNUMBER"] == ["1/2"]
         assert f1["DISCTOTAL"] == ["2"]
+        assert f1["TOTALDISCS"] == ["2"]
+
+    def test_writes_sort_tags_for_the_prefix(self, tmp_path: Path, make_flac):
+        # "The X" should sort under X. Plex needs ALBUMARTISTSORT/ARTISTSORT
+        # to do this; without them "The Brothers Comatose" sorts under T.
+        folder = tmp_path / "show"
+        audio = make_flac(folder / "01.flac")
+        tracks = [Track(number=1, title="KC Intro")]
+        c = _concert(folder, [audio], tracks)
+        c.artist = "The Brothers Comatose"
+        plans = build_plans(c)
+        results = apply_plans(plans, Mode.IN_PLACE)
+        assert all(r.ok for r in results)
+        f = FLAC(str(audio))
+        assert f["ARTIST"] == ["The Brothers Comatose"]
+        assert f["ARTISTSORT"] == ["Brothers Comatose"]
+        assert f["ALBUMARTIST"] == ["The Brothers Comatose"]
+        assert f["ALBUMARTISTSORT"] == ["Brothers Comatose"]
+
+    def test_sort_tag_for_non_the_artist_is_unchanged(self, tmp_path: Path, make_flac):
+        folder = tmp_path / "show"
+        audio = make_flac(folder / "01.flac")
+        tracks = [Track(number=1, title="Track One")]
+        plans = build_plans(_concert(folder, [audio], tracks))
+        apply_plans(plans, Mode.IN_PLACE)
+        f = FLAC(str(audio))
+        # "Test Artist" doesn't start with "The " — sort tag equals artist.
+        assert f["ARTISTSORT"] == ["Test Artist"]
+        assert f["ALBUMARTISTSORT"] == ["Test Artist"]
+
+    def test_writes_track_total_per_disc(self, tmp_path: Path, make_flac):
+        # Per-disc TRACKTOTAL: disc 1 has 3 tracks, disc 2 has 2.
+        folder = tmp_path / "show"
+        audio = [make_flac(folder / f"{i:02d}.flac") for i in range(1, 6)]
+        tracks = [
+            Track(number=1, title="D1T1", disc=1, disc_total=2),
+            Track(number=2, title="D1T2", disc=1, disc_total=2),
+            Track(number=3, title="D1T3", disc=1, disc_total=2),
+            Track(number=1, title="D2T1", disc=2, disc_total=2),
+            Track(number=2, title="D2T2", disc=2, disc_total=2),
+        ]
+        plans = build_plans(_concert(folder, audio, tracks))
+        apply_plans(plans, Mode.IN_PLACE)
+        d1 = FLAC(str(audio[0]))
+        d2 = FLAC(str(audio[3]))
+        assert d1["TRACKTOTAL"] == ["3"]
+        assert d1["TOTALTRACKS"] == ["3"]
+        assert d2["TRACKTOTAL"] == ["2"]
+        assert d2["TOTALTRACKS"] == ["2"]
 
 
 class TestApplyPlansMetadataOnly:
@@ -289,7 +338,8 @@ class TestApplyPlansMP3:
         tags = EasyID3(str(audio))
         assert tags["artist"] == ["Test Artist"]
         assert tags["title"] == ["MP3 Track"]
-        assert tags["tracknumber"] == ["01"]
+        # ID3 has no separate TRACKTOTAL frame; canonical form is "N/total".
+        assert tags["tracknumber"] == ["01/1"]
 
 
 class TestApplyPlansWAV:
@@ -310,7 +360,8 @@ class TestApplyPlansWAV:
         assert str(tags["TPE1"]) == "Test Artist"
         assert str(tags["TPE2"]) == "Test Artist"
         assert str(tags["TIT2"]) == "WAV Track"
-        assert str(tags["TRCK"]) == "01"
+        # ID3 TRCK canonical form is "N/total" when track total is known.
+        assert str(tags["TRCK"]) == "01/1"
 
     def test_uppercase_extension_handled(self, tmp_path: Path, make_wav):
         from mutagen.wave import WAVE
@@ -364,7 +415,7 @@ class TestApplyPlansAIFF:
         assert str(tags["TPE1"]) == "Test Artist"
         assert str(tags["TPE2"]) == "Test Artist"
         assert str(tags["TIT2"]) == "AIFF Track"
-        assert str(tags["TRCK"]) == "01"
+        assert str(tags["TRCK"]) == "01/1"
 
     def test_aiff_extension_variants(self, tmp_path: Path, make_aif):
         from mutagen.aiff import AIFF
@@ -395,7 +446,7 @@ class TestApplyPlansM4A:
         assert tags["\xa9ART"] == ["Test Artist"]
         assert tags["aART"] == ["Test Artist"]
         assert tags["\xa9nam"] == ["M4A Track"]
-        assert tags["trkn"] == [(1, 0)]
+        assert tags["trkn"] == [(1, 1)]
 
     def test_already_tagged_only_rewrites_album(self, tmp_path: Path, make_m4a):
         from mutagen.mp4 import MP4
@@ -814,7 +865,7 @@ class TestMinimalTags:
         assert all(r.ok for r in results)
         tags = EasyID3(str(audio))
         assert tags["artist"] == ["Test Artist"]
-        assert tags["tracknumber"] == ["01"]
+        assert tags["tracknumber"] == ["01/1"]
         assert tags["title"] == ["Keep Me"]
         assert tags["date"] == ["1999"]
 

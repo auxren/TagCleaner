@@ -9,7 +9,7 @@ from pathlib import Path
 
 from mutagen.flac import FLAC
 from mutagen.easyid3 import EasyID3
-from mutagen.id3 import ID3, TALB, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK
+from mutagen.id3 import ID3, TALB, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK, TSO2, TSOP
 from mutagen.mp3 import MP3
 from mutagen import File as MutagenFile
 from mutagen.mp4 import MP4
@@ -40,6 +40,7 @@ class TagPlan:
     title: str | None = None
     disc: int | None = None
     disc_total: int | None = None
+    track_total: int | None = None  # tracks on this disc (TRACKTOTAL/TOTALTRACKS)
     # When True, only ARTIST, ALBUMARTIST, ALBUM, and TRACKNUMBER are written;
     # existing DATE/TITLE/DISC tags on the file are left untouched.
     minimal: bool = False
@@ -117,7 +118,14 @@ def build_plans(
             ))
         return plans
 
+    # Compute per-disc track totals so each plan can carry TRACKTOTAL.
+    # When tracks lack disc numbers we count the whole list as one disc.
+    per_disc_total: dict[int | None, int] = {}
+    for t in concert.tracks:
+        per_disc_total[t.disc] = per_disc_total.get(t.disc, 0) + 1
+
     for audio, track in zip(concert.audio_files, concert.tracks):
+        track_total = track.track_total or per_disc_total.get(track.disc)
         plans.append(TagPlan(
             file=audio,
             dest=_dest(audio),
@@ -128,6 +136,7 @@ def build_plans(
             title=track.title,
             disc=track.disc,
             disc_total=track.disc_total,
+            track_total=track_total,
             minimal=minimal,
         ))
     return plans
@@ -167,6 +176,16 @@ def _parse_int_prefix(s: str | None) -> int | None:
         return None
     m = re.match(r"\s*(\d+)", str(s))
     return int(m.group(1)) if m else None
+
+
+def _sort_key(name: str) -> str:
+    """Sort form of an artist name. Strips a leading ``The `` so Plex sorts
+    "The Brothers Comatose" under B, not T. Leaves other articles alone — "A"
+    and "An" matter less in practice and false positives ("A Tribe Called
+    Quest") are awkward to recover from."""
+    if not name:
+        return ""
+    return re.sub(r"^[Tt]he\s+", "", name).strip()
 
 
 def _track_disc_from_filename(stem: str) -> tuple[int | None, int | None]:
@@ -451,8 +470,11 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool, bool]:
             audio["ALBUM"] = plan.album
             audio.save()
             return True, True, False
+        sort_name = _sort_key(plan.artist)
         audio["ARTIST"] = plan.artist
+        audio["ARTISTSORT"] = sort_name
         audio["ALBUMARTIST"] = plan.artist
+        audio["ALBUMARTISTSORT"] = sort_name
         audio["ALBUM"] = plan.album
         if plan.track is not None:
             audio["TRACKNUMBER"] = f"{plan.track:02d}"
@@ -462,12 +484,20 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool, bool]:
             if plan.title is not None:
                 audio["TITLE"] = plan.title
             if plan.disc is not None and plan.disc_total is not None:
-                audio["DISCNUMBER"] = str(plan.disc)
+                audio["DISCNUMBER"] = f"{plan.disc}/{plan.disc_total}"
                 audio["DISCTOTAL"] = str(plan.disc_total)
+                audio["TOTALDISCS"] = str(plan.disc_total)
             elif plan.track is not None:
                 # Only scrub disc tags when we're writing a full per-track plan.
                 # Metadata-only plans leave any existing disc tags alone.
-                for k in ("DISCNUMBER", "DISCTOTAL"):
+                for k in ("DISCNUMBER", "DISCTOTAL", "TOTALDISCS"):
+                    if k in audio:
+                        del audio[k]
+            if plan.track_total is not None:
+                audio["TRACKTOTAL"] = str(plan.track_total)
+                audio["TOTALTRACKS"] = str(plan.track_total)
+            elif plan.track is not None:
+                for k in ("TRACKTOTAL", "TOTALTRACKS"):
                     if k in audio:
                         del audio[k]
         audio.save()
@@ -488,11 +518,17 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool, bool]:
             audio["album"] = plan.album
             audio.save()
             return True, True, False
+        sort_name = _sort_key(plan.artist)
         audio["artist"] = plan.artist
+        audio["artistsort"] = sort_name
         audio["albumartist"] = plan.artist
+        audio["albumartistsort"] = sort_name
         audio["album"] = plan.album
         if plan.track is not None:
-            audio["tracknumber"] = f"{plan.track:02d}"
+            if plan.track_total is not None:
+                audio["tracknumber"] = f"{plan.track:02d}/{plan.track_total}"
+            else:
+                audio["tracknumber"] = f"{plan.track:02d}"
         if not plan.minimal:
             if plan.date:
                 audio["date"] = plan.date
@@ -515,11 +551,15 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool, bool]:
             audio.tags["TALB"] = TALB(encoding=3, text=plan.album)
             audio.save()
             return True, True, False
+        sort_name = _sort_key(plan.artist)
         audio.tags["TPE1"] = TPE1(encoding=3, text=plan.artist)
+        audio.tags["TSOP"] = TSOP(encoding=3, text=sort_name)
         audio.tags["TPE2"] = TPE2(encoding=3, text=plan.artist)
+        audio.tags["TSO2"] = TSO2(encoding=3, text=sort_name)
         audio.tags["TALB"] = TALB(encoding=3, text=plan.album)
         if plan.track is not None:
-            audio.tags["TRCK"] = TRCK(encoding=3, text=f"{plan.track:02d}")
+            trk_text = f"{plan.track:02d}/{plan.track_total}" if plan.track_total else f"{plan.track:02d}"
+            audio.tags["TRCK"] = TRCK(encoding=3, text=trk_text)
         if not plan.minimal:
             if plan.date:
                 audio.tags["TDRC"] = TDRC(encoding=3, text=plan.date)
@@ -544,11 +584,14 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool, bool]:
             audio.tags["\xa9alb"] = [plan.album]
             audio.save()
             return True, True, False
+        sort_name = _sort_key(plan.artist)
         audio.tags["\xa9ART"] = [plan.artist]
+        audio.tags["soar"] = [sort_name]
         audio.tags["aART"] = [plan.artist]
+        audio.tags["soaa"] = [sort_name]
         audio.tags["\xa9alb"] = [plan.album]
         if plan.track is not None:
-            audio.tags["trkn"] = [(plan.track, 0)]
+            audio.tags["trkn"] = [(plan.track, plan.track_total or 0)]
         if not plan.minimal:
             if plan.date:
                 audio.tags["\xa9day"] = [plan.date]
@@ -574,8 +617,11 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool, bool]:
             audio["ALBUM"] = plan.album
             audio.save()
             return True, True, False
+        sort_name = _sort_key(plan.artist)
         audio["ARTIST"] = plan.artist
+        audio["ARTISTSORT"] = sort_name
         audio["ALBUMARTIST"] = plan.artist
+        audio["ALBUMARTISTSORT"] = sort_name
         audio["ALBUM"] = plan.album
         if plan.track is not None:
             audio["TRACKNUMBER"] = f"{plan.track:02d}"
@@ -585,10 +631,18 @@ def _write_tags(plan: TagPlan) -> tuple[bool, bool, bool]:
             if plan.title is not None:
                 audio["TITLE"] = plan.title
             if plan.disc is not None and plan.disc_total is not None:
-                audio["DISCNUMBER"] = str(plan.disc)
+                audio["DISCNUMBER"] = f"{plan.disc}/{plan.disc_total}"
                 audio["DISCTOTAL"] = str(plan.disc_total)
+                audio["TOTALDISCS"] = str(plan.disc_total)
             elif plan.track is not None:
-                for k in ("DISCNUMBER", "DISCTOTAL"):
+                for k in ("DISCNUMBER", "DISCTOTAL", "TOTALDISCS"):
+                    if k in audio:
+                        del audio[k]
+            if plan.track_total is not None:
+                audio["TRACKTOTAL"] = str(plan.track_total)
+                audio["TOTALTRACKS"] = str(plan.track_total)
+            elif plan.track is not None:
+                for k in ("TRACKTOTAL", "TOTALTRACKS"):
                     if k in audio:
                         del audio[k]
         audio.save()

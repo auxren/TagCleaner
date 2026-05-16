@@ -12,6 +12,7 @@ class Track:
     title: str
     disc: Optional[int] = None
     disc_total: Optional[int] = None
+    track_total: Optional[int] = None  # total tracks on this disc (for TRACKTOTAL tag)
 
 
 @dataclass
