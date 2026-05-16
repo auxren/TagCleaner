@@ -684,6 +684,37 @@ class TestBuildConcertIntegration:
         c = build_concert(folder, audio, None)
         assert "no setlist found" in c.issues
 
+    def test_rich_multi_artist_header_canonicalized_via_lex(
+        self, tmp_path: Path, make_flac,
+    ):
+        # Regression: ``Del McCoury, David Grisman, And The Del McCoury Band``
+        # tripped _looks_like_prose_artist, so the parser threw away the
+        # rich header and used the folder-name prefix ``"del"`` (from
+        # ``del2014-04-17.flac16``) as the ARTIST tag. The lexicon already
+        # had ``Del McCoury Band`` (count 16) — substring precedence should
+        # have rescued it. Fix: when prose-rejection fires, try the lex on
+        # the prose-shaped string BEFORE falling back to the folder prefix.
+        from tagcleaner.lexicon import Lexicon
+        folder = tmp_path / "del2014-04-17.flac16"
+        folder.mkdir()
+        audio = [make_flac(folder / "del2014-04-17d01t01.flac")]
+        info = folder / "info.txt"
+        info.write_text(
+            "Del McCoury, David Grisman, And The Del McCoury Band\n"
+            "City Winery\n"
+            "New York City, New York\n"
+            "4/17/2014\n"
+            "\n"
+            "01 Announcements\n",
+            encoding="utf-8",
+        )
+        lex = Lexicon(artists={"Del McCoury": 12, "Del McCoury Band": 16})
+        c = build_concert(folder, audio, info, lexicon=lex)
+        assert c.artist == "Del McCoury Band"
+        assert c.city == "New York City"
+        assert c.region == "New York"
+        assert c.venue == "City Winery"
+
 
 class TestTrustParentArtist:
     """Last-resort artist fallback that walks the ancestor chain looking for
@@ -1263,6 +1294,25 @@ class TestSpaceLabeledFields:
         out = parse_info_txt(body)
         # Real venue from the comma line wins.
         assert out.get("venue") == "Madison Square Garden"
+
+    def test_city_label_does_not_fire_on_venue_starting_with_city(self):
+        # "City Winery" is a venue name, not a "City <CityName>" label. Without
+        # a gate, the City label-row regex grabs "Winery" as the city. Gate:
+        # only trust City/State/Country labels when at least one strong label
+        # (Artist/Band/Venue/Location) also matches — otherwise we're in a
+        # comma-list info file, not a labeled-row one.
+        body = (
+            "Del McCoury, David Grisman, And The Del McCoury Band\n"
+            "City Winery\n"
+            "New York City, New York\n"
+            "4/17/2014\n"
+            "\n"
+            "01 Announcements\n"
+        )
+        out = parse_info_txt(body)
+        assert out.get("venue") == "City Winery"
+        assert out.get("city") == "New York City"
+        assert out.get("region") == "New York"
 
 
 class TestUnnumberedSetlist:

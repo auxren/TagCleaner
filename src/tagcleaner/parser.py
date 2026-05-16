@@ -872,15 +872,34 @@ def parse_info_txt(body: str) -> dict:
     # The label word IS the field name and the rest of the line IS the
     # value. Line-anchored to avoid catching prose like "Venue is on the
     # corner..."; value must start with a capital letter.
-    for pat, key in [
+    #
+    # Gate: only trust the City/State/Country variants when at least one
+    # *unambiguous* label (Artist/Band/Venue/Location) also matches. Without
+    # this gate "City Winery" (a venue whose name starts with the word
+    # "City") false-matches as ``city=Winery``. The unambiguous labels are
+    # what tell us the file actually uses the labeled-row format.
+    _STRONG_LABEL_PATTERNS = (
+        r"^[Aa]rtist\s+[A-Z][^\n]{1,80}\s*$",
+        r"^[Bb]and\s+[A-Z][^\n]{1,80}\s*$",
+        r"^[Vv]enue\s+[A-Z][^\n]{1,80}\s*$",
+        r"^[Ll]ocation\s+[A-Z][^\n]{1,80}\s*$",
+    )
+    uses_labeled_rows = any(
+        re.search(p, body, re.MULTILINE) for p in _STRONG_LABEL_PATTERNS
+    )
+    label_patterns = [
         (r"^[Aa]rtist\s+([A-Z][^\n]{1,80})\s*$", "artist"),
         (r"^[Bb]and\s+([A-Z][^\n]{1,80})\s*$", "artist"),
         (r"^[Vv]enue\s+([A-Z][^\n]{1,80})\s*$", "venue"),
         (r"^[Ll]ocation\s+([A-Z][^\n]{1,80})\s*$", "venue"),
-        (r"^[Cc]ity\s+([A-Z][^\n]{1,80})\s*$", "city"),
-        (r"^[Ss]tate\s+([A-Z][^\n]{1,80})\s*$", "region"),
-        (r"^[Cc]ountry\s+([A-Z][^\n]{1,80})\s*$", "region"),
-    ]:
+    ]
+    if uses_labeled_rows:
+        label_patterns.extend([
+            (r"^[Cc]ity\s+([A-Z][^\n]{1,80})\s*$", "city"),
+            (r"^[Ss]tate\s+([A-Z][^\n]{1,80})\s*$", "region"),
+            (r"^[Cc]ountry\s+([A-Z][^\n]{1,80})\s*$", "region"),
+        ])
+    for pat, key in label_patterns:
         m = re.search(pat, body, re.MULTILINE)
         if m and key not in data:
             val = m.group(1).strip().strip(",")
@@ -1626,8 +1645,19 @@ def build_concert(
     # words), discard it so parent-trust / lexicon can rescue the right
     # name from the folder tree. Prevents "An interesting SB Taj solo…"
     # from becoming the ARTIST tag on 23 FLACs.
+    #
+    # Exception: rich multi-artist header lines like
+    # ``Del McCoury, David Grisman, And The Del McCoury Band`` also look
+    # like prose, but the lexicon's substring-precedence pass can usually
+    # pluck a known canonical out of them. Try that BEFORE falling back to
+    # the folder prefix (which on date-prefix shorthand folders like
+    # ``del2014-04-17`` gives a useless single-token name).
     if artist and _looks_like_prose_artist(artist):
-        artist = guess_artist_from_folder(folder_name)
+        lex_match = lexicon.match_artist(artist) if lexicon is not None else None
+        if lex_match:
+            artist = lex_match
+        else:
+            artist = guess_artist_from_folder(folder_name)
     # Folder-name dates are almost always the concert date; info.txt bodies
     # often mention mastering/transfer dates that shouldn't win.
     date = parse_date(folder_name) or parse_date(filenames) or parsed.get("date")
