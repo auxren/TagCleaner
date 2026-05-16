@@ -89,6 +89,12 @@ class TestGuessArtist:
     def test_unknown_prefix_returns_none(self):
         assert guess_artist_from_folder("xyz_unparseable") is None
 
+    def test_ambiguous_bc_prefix_returns_none(self):
+        # "bc" was previously aliased to "Black Crowes" — but real-world
+        # libraries use it for Brothers Comatose, Blue Cheer, etc. Let the
+        # lexicon disambiguate; the folder-prefix shortcut should NOT win.
+        assert guess_artist_from_folder("bc2026-05-15") is None
+
     @pytest.mark.parametrize("folder", [
         # No alphabetic content before the date.
         "2007 10 12 I Camden NJ",

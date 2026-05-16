@@ -142,7 +142,10 @@ ARTIST_PREFIX_MAP: dict[str, str] = {
     "wsp": "Widespread Panic", "wilco": "Wilco", "wb4t": "Will Bernard 4tet",
     "willyp": "Willy Porter", "word": "The Word",
     "ymsb": "Yonder Mountain String Band", "zero": "Zero", "zm": "Zony Mash",
-    "zwan": "Zwan", "bc": "Black Crowes",
+    "zwan": "Zwan",
+    # "bc" intentionally omitted — ambiguous between Black Crowes,
+    # Brothers Comatose, Blue Cheer, etc. Let the lexicon decide based on
+    # what the user's library actually contains.
     # Extras commonly seen in Tapes/etree trees beyond the wiki.
     "los": "Los Lobos", "bw": "Bob Weir", "bob": "Bob Dylan",
     "bd": "Bob Dylan", "rush": "Rush", "srv": "Stevie Ray Vaughan",
@@ -360,7 +363,16 @@ def guess_artist_from_folder(folder_name: str) -> str | None:
     pos = _first_date_position(folder_name)
     if pos is None or pos == 0:
         return None
-    return _clean_artist_candidate(folder_name[:pos])
+    prefix = folder_name[:pos]
+    # Reject short lowercase prefixes (≤2 chars or 3-char-lowercase) that
+    # didn't resolve via the etree alias table — those are ambiguous
+    # abbreviations (``bc``, ``mj``…) where letting them through forces a
+    # wrong lex match. Uppercase 3-letter band initials (CRB, NRBQ) are OK
+    # to pass since they're typically deliberate.
+    stripped = prefix.strip(" -,_()[]\t")
+    if len(stripped) <= 2 or (len(stripped) == 3 and stripped == stripped.lower()):
+        return None
+    return _clean_artist_candidate(prefix)
 
 
 def _ancestor_is_various_artists(folder: Path) -> bool:
